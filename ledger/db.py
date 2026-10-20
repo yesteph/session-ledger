@@ -27,6 +27,13 @@ CREATE TABLE IF NOT EXISTS session (
   extract_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS section (
+  id            INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL,
+  position      INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
 CREATE TABLE IF NOT EXISTS subject (
   id            INTEGER PRIMARY KEY,
   name          TEXT NOT NULL,
@@ -103,6 +110,12 @@ def connect():
     for col in ("content_hash", "extracted_hash"):
         if col not in cols:
             conn.execute(f"ALTER TABLE session ADD COLUMN {col} TEXT")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(subject)")}
+    for col, decl in (("section_id", "INTEGER REFERENCES section(id)"),
+                      ("section_locked", "INTEGER NOT NULL DEFAULT 0"),     # set by a human; placement never moves it
+                      ("section_attempts", "INTEGER NOT NULL DEFAULT 0")):  # placement passes that found no section
+        if col not in cols:
+            conn.execute(f"ALTER TABLE subject ADD COLUMN {col} {decl}")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(item)")}
     for col, decl in (("subject_id", "INTEGER REFERENCES subject(id)"),
                       ("subject_locked", "INTEGER NOT NULL DEFAULT 0"),    # set by a human; clustering never moves it

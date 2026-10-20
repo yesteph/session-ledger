@@ -5,6 +5,7 @@ their names and identity as new sessions arrive:
 1. bootstrap: when no subject exists, one Claude call drafts the catalog from session summaries.
 2. assign: unassigned items are matched to catalog subjects in parallel batches (or to none).
 3. propose: items no subject fits get one call that creates new subjects for them.
+4. sections: subjects are grouped into sections, drafted once, then new subjects are placed.
 
 Human choices win: items with subject_locked are never moved, and subject merges and renames
 are made in the dashboard. Items that fit nothing after two passes stay unclassified.
@@ -65,6 +66,37 @@ PROPOSE_SCHEMA = {
                        "items": {"type": "array", "items": {"type": "integer"}}},
         "required": ["name", "description", "items"]}}},
     "required": ["subjects"],
+}
+
+
+SECTION_HINT = """A section groups subjects into a product area, initiative family or standing responsibility,
+e.g. "Payments product", "Platform operations", "Build and release pipeline", "Developer environment",
+"Benchmarking". Name: at most 5 words."""
+
+SECTIONS_SYSTEM = f"""You organise a catalog of work subjects into sections.
+{SECTION_HINT}
+Produce 4 to 10 sections and put every subject in exactly one section."""
+
+SECTIONS_SCHEMA = {
+    "type": "object",
+    "properties": {"sections": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"name": {"type": "string"}, "subjects": {"type": "array", "items": {"type": "integer"}}},
+        "required": ["name", "subjects"]}}},
+    "required": ["sections"],
+}
+
+PLACE_SYSTEM = f"""You file new work subjects under existing sections.
+{SECTION_HINT}
+For each subject give the id of its section, or null when no section fits. Use only section ids from the list."""
+
+PLACE_SCHEMA = {
+    "type": "object",
+    "properties": {"placements": {"type": "array", "items": {
+        "type": "object",
+        "properties": {"subject": {"type": "integer"}, "section": {"type": ["integer", "null"]}},
+        "required": ["subject", "section"]}}},
+    "required": ["placements"],
 }
 
 
@@ -156,6 +188,43 @@ def propose(conn, model, limit=400):
     return cost
 
 
+def place_sections(conn, model):
+    """Bootstrap sections when none exist; otherwise place new subjects into existing sections."""
+    subjects = [dict(r) for r in conn.execute(
+        """SELECT id, name, description FROM subject
+           WHERE merged_into IS NULL AND section_locked = 0 AND section_attempts < ?
+             AND (section_id IS NULL OR section_id NOT IN (SELECT id FROM section))""", (MAX_ATTEMPTS,))]
+    if not subjects:
+        return 0.0
+    sections = [dict(r) for r in conn.execute("SELECT id, name FROM section ORDER BY position, id")]
+    ids = {s["id"] for s in subjects}
+    if not sections:
+        out, cost = structured(catalog_text(subjects), SECTIONS_SYSTEM, SECTIONS_SCHEMA, model)
+        for pos, sec in enumerate(out["sections"]):
+            members = [i for i in sec["subjects"] if i in ids]
+            if members:
+                sid = conn.execute("INSERT INTO section (name, position) VALUES (?, ?)", (sec["name"], pos)).lastrowid
+                conn.executemany("UPDATE subject SET section_id = ? WHERE id = ?", [(sid, i) for i in members])
+        conn.commit()
+        print(f"sections: bootstrapped {len(out['sections'])} sections  ${cost:.2f}", file=sys.stderr)
+        return cost
+    prompt = ("SECTIONS\n" + "\n".join(f"{s['id']}: {s['name']}" for s in sections) +
+              "\n\nNEW SUBJECTS\n" + catalog_text(subjects))
+    out, cost = structured(prompt, PLACE_SYSTEM, PLACE_SCHEMA, model)
+    valid = {s["id"] for s in sections}
+    got = {p["subject"]: p["section"] for p in out["placements"]}
+    placed = 0
+    for sid in ids:
+        if got.get(sid) in valid:
+            conn.execute("UPDATE subject SET section_id = ? WHERE id = ?", (got[sid], sid))
+            placed += 1
+        else:
+            conn.execute("UPDATE subject SET section_attempts = section_attempts + 1 WHERE id = ?", (sid,))
+    conn.commit()
+    print(f"sections: placed {placed}/{len(ids)} new subjects  ${cost:.2f}", file=sys.stderr)
+    return cost
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", default="sonnet")
@@ -169,6 +238,7 @@ def main():
         cost += bootstrap(conn, args.model)
     cost += assign(conn, args.model, args.batch, args.workers)
     cost += propose(conn, args.model)
+    cost += place_sections(conn, args.model)
     left = conn.execute("SELECT count(*) FROM item WHERE merged_into IS NULL AND subject_id IS NULL").fetchone()[0]
     print(f"cluster: {len(catalog(conn))} subjects, {left} items unclassified; total ${cost:.2f}", file=sys.stderr)
 

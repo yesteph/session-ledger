@@ -48,10 +48,12 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
 5. **cluster.py**: subjects are an LLM-maintained catalog with stable ids, not raw clusters. Bootstrap
    (only when no subject exists) drafts the catalog from session summaries; `assign` files unassigned items
    in parallel batches; `propose` creates subjects for leftovers. `item.subject_attempts` caps retries, so
-   one-off items stay unclassified instead of being re-sent every run.
+   one-off items stay unclassified instead of being re-sent every run. `place_sections` groups subjects into
+   sections the same way: drafted once when no section exists, then new subjects are placed
+   (`subject.section_attempts` caps retries).
 6. **server.py** + **index.html**: stdlib HTTP server, `/api/state` and `/api/brief?subject=` reads plus POST
    actions (`merge`, `undo`, `not-duplicate`, `resolve`, `item`, `subject`, `subject-merge`, `subject-unmerge`,
-   `item-subject`). Single static page, no build step.
+   `item-subject`, `section`, `section-delete`, `subject-section`). Single static page, no build step.
 7. **refresh.py**: runs steps 1-5 under an `fcntl` lock; concurrent callers drop a `refresh.pending`
    marker and the lock holder loops until it is gone.
 
@@ -60,7 +62,8 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
 - **Merges are non-destructive**: absorbed items get `merged_into = canonical`; `merge_event` stores a
   snapshot for undo. Readers treat `merged_into IS NULL` as active and gather sessions transitively.
 - **Human edits win**: anything edited, merged or resolved has `edited = 1` and must survive re-extraction.
-  Items moved by hand have `subject_locked = 1`; clustering never moves them.
+  Items moved by hand have `subject_locked = 1` and subjects moved by hand have `section_locked = 1`;
+  clustering never moves either. Deleting a section locks its subjects as unsectioned.
 - **Subject merges are non-destructive too**: `subject.merged_into` is resolved at read time
   (`server.subject_resolver`); `item.subject_id` keeps the original value so unmerge restores it.
 - **Headless `claude -p` calls go through `claude_cli.structured`**, which must keep `--no-session-persistence` (or they pollute the corpus) and

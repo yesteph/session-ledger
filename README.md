@@ -19,10 +19,12 @@ so open threads spread across many conversations are not lost, and duplicates ca
    `related` or `unrelated`. Verdicts are cached and invalidated when a text changes.
 5. `cluster.py` files items under subjects (named workstreams spanning sessions). The first run drafts
    a catalog from session summaries; later runs assign only new items and create subjects for items
-   no existing subject fits.
+   no existing subject fits. Subjects are grouped into sections (product areas), drafted once and
+   then extended as new subjects appear.
 6. `server.py` serves the review dashboard and a JSON API over SQLite (`ledger/data/ledger.db`).
-   The Subjects tab shows pending/decided/done per subject and copies a markdown brief to continue a
-   subject in a new session.
+   The Subjects tab groups subjects by section, shows pending/decided/done per subject, and copies a
+   markdown brief to continue a subject in a new session. Sections can be created, renamed and deleted,
+   and subjects moved between them.
 
 Merges are non-destructive: absorbed items point at the canonical item, every merge is logged
 with a snapshot, and can be undone. Pairs marked "not a duplicate" are never suggested again.

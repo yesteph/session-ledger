@@ -80,6 +80,14 @@ dialog .row { display: flex; gap: 8px; margin: 10px 0; align-items: center; flex
 .subj h3 { margin: 0 0 2px; font-size: 14px; }
 .subj .desc { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
 .subj.merged { opacity: .6; }
+.section { margin-bottom: 14px; }
+.section > summary { list-style: none; cursor: pointer; display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+  padding: 8px 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+.section > summary::-webkit-details-marker { display: none; }
+.section > summary h2 { font-size: 15px; margin: 0; }
+.section > summary h2::before { content: "▾ "; color: var(--muted); }
+.section:not([open]) > summary h2::before { content: "▸ "; }
+.section > summary .meta { grid-column: auto; flex: 1; }
 .chip.subject { color: var(--text); }
 .toast { position: fixed; top: 12px; right: 12px; background: var(--text); color: var(--bg); padding: 6px 12px; border-radius: 6px;
   opacity: 0; transition: opacity .2s; z-index: 10; }
@@ -140,7 +148,9 @@ const TABS = [
   ["subjects", "Subjects"], ["pending", "Pending"], ["decision", "Decided"], ["done", "Done"], ["abandoned", "Abandoned"],
   ["dupes", "Review duplicates"], ["sessions", "Sessions"], ["merges", "Merge log"],
 ];
-let S = { items: [], sessions: [], subjects: [], candidates: [], merges: [] };
+let S = { items: [], sessions: [], subjects: [], sections: [], candidates: [], merges: [] };
+let collapsed = new Set();
+try { collapsed = new Set(JSON.parse(localStorage.getItem("ledger.collapsed") || "[]")); } catch {}
 let tab = "subjects";
 const sel = new Set();
 const $ = id => document.getElementById(id);
@@ -158,9 +168,10 @@ async function load() {
   const cur = $("project").value;
   $("project").innerHTML = `<option value="">All projects</option>` + projects.map(p => `<option ${p === cur ? "selected" : ""}>${esc(p)}</option>`).join("");
   const cs = $("subject").value;
-  $("subject").innerHTML = `<option value="">All subjects</option><option value="none" ${cs === "none" ? "selected" : ""}>Unclassified</option>` +
-    activeSubjects().sort((a, b) => a.name.localeCompare(b.name))
-      .map(x => `<option value="${x.id}" ${String(x.id) === cs ? "selected" : ""}>${esc(x.name)}</option>`).join("");
+  const opt = (v, l) => `<option value="${v}" ${v === cs ? "selected" : ""}>${esc(l)}</option>`;
+  $("subject").innerHTML = opt("", "All subjects") + opt("none", "Unclassified") +
+    sectionGroups().map(g => `<optgroup label="${esc(g.name)}">` + (g.id ? opt(`sec:${g.id}`, `All of ${g.name}`) : "") +
+      g.subjects.map(x => opt(String(x.id), x.name)).join("") + "</optgroup>").join("");
   for (const id of [...sel]) if (!S.items.find(i => i.id === id)) sel.delete(id);
   render();
 }
@@ -177,10 +188,23 @@ function toast(m) { const t = $("toast"); t.textContent = m; t.classList.add("on
 const activeSubjects = () => S.subjects.filter(x => !x.merged_into);
 const subjById = () => Object.fromEntries(S.subjects.map(x => [x.id, x]));
 
+/** Active subjects grouped by section, in section order; unsectioned last. */
+function sectionGroups() {
+  const known = new Set(S.sections.map(x => x.id));
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  const groups = S.sections.map(sec => ({ id: sec.id, name: sec.name,
+    subjects: activeSubjects().filter(x => x.section_id === sec.id).sort(byName) }));
+  const rest = activeSubjects().filter(x => !known.has(x.section_id)).sort(byName);
+  if (rest.length) groups.push({ id: null, name: "Unsectioned", subjects: rest });
+  return groups;
+}
+
 function filtered() {
   const p = $("project").value, q = $("q").value.toLowerCase(), staleOnly = $("staleOnly").checked, sj = $("subject").value;
   return S.items.filter(i => (!p || i.project === p) && (!q || i.text.toLowerCase().includes(q)) && (!staleOnly || isStale(i))
-    && (!sj || (sj === "none" ? !i.subject_id : String(i.subject_id) === sj)));
+    && (!sj || (sj === "none" ? !i.subject_id
+      : sj.startsWith("sec:") ? String(subjById()[i.subject_id]?.section_id) === sj.slice(4)
+      : String(i.subject_id) === sj)));
 }
 
 function labelMatch(c) {
@@ -263,11 +287,24 @@ function render() {
           <button class="btn primary" data-open="${r.x.id}">Items</button>
           <button class="btn" data-brief="${r.x.id}" title="Copy a markdown brief to continue this subject in a new session">Copy brief</button>
           <button class="btn" data-rename="${r.x.id}">Rename</button>
+          <button class="btn" data-ssection="${r.x.id}">Section…</button>
           <button class="btn" data-smerge="${r.x.id}">Merge into…</button>
         </span></div></div>`;
     const unclassified = (groups.none || []).length;
     const merged = S.subjects.filter(x => x.merged_into);
-    m.innerHTML = (rows.length ? rows.map(card).join("") : `<div class="empty">No subjects.</div>`)
+    const sectionHtml = g => {
+      const rs = rows.filter(r => g.subjects.includes(r.x));
+      if (!rs.length) return "";
+      const key = String(g.id ?? "none"), pend = rs.reduce((n, r) => n + r.st.pending, 0);
+      const stale = rs.reduce((n, r) => n + r.st.stale, 0);
+      return `<details class="section" data-section="${key}" ${collapsed.has(key) ? "" : "open"}>
+        <summary><h2>${esc(g.name)}</h2><span class="meta">${rs.length} subjects · ${pend} pending${stale ? ` · <span class="stale">${stale} stale</span>` : ""}
+          ${g.id ? `<span class="actions"><button class="btn" data-secrename="${g.id}">Rename</button>
+            <button class="btn" data-secdelete="${g.id}">Delete</button></span>` : ""}</span></summary>
+        ${rs.map(card).join("")}</details>`;
+    };
+    m.innerHTML = `<div class="bar" style="padding:0 0 10px"><button class="btn" data-secnew="1">+ New section</button></div>`
+      + (rows.length ? sectionGroups().map(sectionHtml).join("") : `<div class="empty">No subjects.</div>`)
       + (unclassified ? `<div class="subj"><h3>Unclassified</h3><div class="meta" style="grid-column:auto">${unclassified} items
           <span class="actions"><button class="btn" data-open="none">Items</button></span></div></div>` : "")
       + merged.map(x => `<div class="subj merged"><div class="meta" style="grid-column:auto">${esc(x.name)} → merged into ${esc(subjById()[x.merged_into]?.name || "#" + x.merged_into)}
@@ -338,7 +375,7 @@ function openMerge(ids) {
 }
 
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-tab],[data-edit],[data-session],[data-resume],[data-notdup],[data-pairmerge],[data-undo],[data-resolve],[data-move],[data-open],[data-brief],[data-rename],[data-smerge],[data-sunmerge]");
+  const t = e.target.closest("[data-tab],[data-edit],[data-session],[data-resume],[data-notdup],[data-pairmerge],[data-undo],[data-resolve],[data-move],[data-open],[data-brief],[data-rename],[data-smerge],[data-sunmerge],[data-ssection],[data-secnew],[data-secrename],[data-secdelete]");
   if (!t) return;
   const d = t.dataset;
   if (d.tab) { tab = d.tab; try { localStorage.setItem("ledger.tab", tab); } catch {} render(); }
@@ -370,6 +407,35 @@ document.addEventListener("click", async e => {
       .sort((a, b) => a.name.localeCompare(b.name)).map(y => [String(y.id), y.name]));
     if (into) post("/api/subject-merge", { from: x.id, into: +into }, "Subjects merged");
   }
+  else if (d.ssection) {
+    const x = subjById()[d.ssection];
+    const to = await pick(`Section for "${x.name}"`, [["none", "Unsectioned"],
+      ...S.sections.map(sec => [String(sec.id), sec.name]), ["new", "+ New section…"]], String(x.section_id ?? "none"));
+    if (to === null) return;
+    let section = to === "none" ? null : +to;
+    if (to === "new") {
+      const name = prompt("New section name");
+      if (!name || !name.trim()) return;
+      const r = await (await fetch("/api/section", { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim() }) })).json();
+      section = r.id;
+    }
+    post("/api/subject-section", { id: x.id, section }, "Subject moved");
+  }
+  else if (d.secnew) {
+    const name = prompt("New section name");
+    if (name && name.trim()) post("/api/section", { name: name.trim() }, "Section created");
+  }
+  else if (d.secrename) {
+    e.preventDefault();
+    const sec = S.sections.find(x => x.id == d.secrename), name = prompt("Section name", sec.name);
+    if (name && name.trim() !== sec.name) post("/api/section", { id: sec.id, name: name.trim() }, "Section renamed");
+  }
+  else if (d.secdelete) {
+    e.preventDefault();
+    const sec = S.sections.find(x => x.id == d.secdelete);
+    if (confirm(`Delete section "${sec.name}"? Its subjects become unsectioned.`)) post("/api/section-delete", { id: sec.id }, "Section deleted");
+  }
   else if (d.sunmerge) post("/api/subject-unmerge", { id: +d.sunmerge }, "Subject restored");
   else if (d.move) {
     const it = S.items.find(i => i.id == d.move);
@@ -384,6 +450,12 @@ document.addEventListener("change", e => {
   if (d.sel) { e.target.checked ? sel.add(+d.sel) : sel.delete(+d.sel); render(); }
   else if (d.type) post("/api/item", { id: +d.type, type: e.target.value }, `Marked ${e.target.value}`);
 });
+document.addEventListener("toggle", e => {
+  const key = e.target.dataset?.section;
+  if (!key) return;
+  e.target.open ? collapsed.delete(key) : collapsed.add(key);
+  try { localStorage.setItem("ledger.collapsed", JSON.stringify([...collapsed])); } catch {}
+}, true);
 ["project", "subject", "q", "staleOnly", "label"].forEach(id => $(id).addEventListener("input", render));
 $("mergeSel").onclick = () => openMerge([...sel]);
 $("clearSel").onclick = () => { sel.clear(); render(); };

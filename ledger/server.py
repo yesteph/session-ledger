@@ -68,6 +68,10 @@ def subjects(conn):
     return [dict(r) for r in conn.execute("SELECT * FROM subject ORDER BY id")]
 
 
+def sections(conn):
+    return [dict(r) for r in conn.execute("SELECT * FROM section ORDER BY position, id")]
+
+
 def brief(conn, sid):
     """Markdown context pack to continue a subject in a fresh session."""
     subj = conn.execute("SELECT * FROM subject WHERE id=?", (sid,)).fetchone()
@@ -190,6 +194,33 @@ def edit_subject(conn, sid, name=None, description=None):
     conn.commit()
 
 
+def save_section(conn, sid=None, name=None):
+    """Create a section (no id) or rename one; returns its id."""
+    if not (name or "").strip():
+        raise ValueError("section name required")
+    if sid is None:
+        pos = conn.execute("SELECT coalesce(max(position), -1) + 1 FROM section").fetchone()[0]
+        sid = conn.execute("INSERT INTO section (name, position) VALUES (?, ?)", (name.strip(), pos)).lastrowid
+    else:
+        conn.execute("UPDATE section SET name=? WHERE id=?", (name.strip(), sid))
+    conn.commit()
+    return sid
+
+
+def delete_section(conn, sid):
+    """Remove a section; its subjects become unsectioned and stay there (locked) until moved."""
+    conn.execute("UPDATE subject SET section_id=NULL, section_locked=1 WHERE section_id=?", (sid,))
+    conn.execute("DELETE FROM section WHERE id=?", (sid,))
+    conn.commit()
+
+
+def move_subject(conn, subject_id, section_id):
+    if section_id is not None and not conn.execute("SELECT 1 FROM section WHERE id=?", (section_id,)).fetchone():
+        raise ValueError("section not found")
+    conn.execute("UPDATE subject SET section_id=?, section_locked=1 WHERE id=?", (section_id, subject_id))
+    conn.commit()
+
+
 def merge_subject(conn, src, into):
     resolve = subject_resolver(conn)
     if resolve(int(into)) == int(src) or int(src) == int(into):
@@ -240,7 +271,7 @@ class Handler(BaseHTTPRequestHandler):
         conn = connect()
         try:
             if path == "/api/state":
-                return self._send(200, {"items": items(conn), "sessions": sessions(conn), "subjects": subjects(conn),
+                return self._send(200, {"items": items(conn), "sessions": sessions(conn), "subjects": subjects(conn), "sections": sections(conn),
                                         "candidates": candidates(conn), "merges": merges(conn)})
             if path == "/api/brief":
                 sid = int(parse_qs(urlparse(self.path).query).get("subject", ["0"])[0])
@@ -265,6 +296,12 @@ class Handler(BaseHTTPRequestHandler):
                 resolve(conn, body["pending"], body["resolver"])
             elif self.path == "/api/subject":
                 edit_subject(conn, body["id"], body.get("name"), body.get("description"))
+            elif self.path == "/api/section":
+                return self._send(200, {"ok": True, "id": save_section(conn, body.get("id"), body.get("name"))})
+            elif self.path == "/api/section-delete":
+                delete_section(conn, body["id"])
+            elif self.path == "/api/subject-section":
+                move_subject(conn, body["id"], body.get("section"))
             elif self.path == "/api/subject-merge":
                 merge_subject(conn, body["from"], body["into"])
             elif self.path == "/api/subject-unmerge":
