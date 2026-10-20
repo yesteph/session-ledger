@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Session Ledger</title>
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --text: #1d1d1b; --muted: #6b6b66; --line: #e4e4df;
+  --accent: #c2410c; --accent-soft: #fdeee6;
+  --pending: #b45309; --pending-bg: #fef3c7;
+  --decision: #1d4ed8; --decision-bg: #dbeafe;
+  --done: #15803d; --done-bg: #dcfce7;
+  --abandoned: #6b7280; --abandoned-bg: #f3f4f6;
+  --stale: #b91c1c;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --panel: #1f1f1d; --text: #ececea; --muted: #9a9a94; --line: #33332f;
+    --accent: #fb923c; --accent-soft: #3a2316;
+    --pending: #fbbf24; --pending-bg: #3a2e10; --decision: #93c5fd; --decision-bg: #172a4a;
+    --done: #86efac; --done-bg: #12321f; --abandoned: #a1a1aa; --abandoned-bg: #2a2a2e; --stale: #f87171;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: var(--bg); border-bottom: 1px solid var(--line); padding: 12px 16px 0; }
+h1 { font-size: 16px; margin: 0 0 10px; display: flex; gap: 12px; align-items: baseline; flex-wrap: wrap; }
+h1 small { color: var(--muted); font-weight: 400; font-size: 12px; }
+.tabs { display: flex; gap: 2px; overflow-x: auto; }
+.tab { border: 0; background: none; color: var(--muted); padding: 8px 12px; cursor: pointer; font: inherit;
+  border-bottom: 2px solid transparent; white-space: nowrap; }
+.tab.on { color: var(--text); border-bottom-color: var(--accent); font-weight: 600; }
+.tab .n { font-variant-numeric: tabular-nums; color: var(--muted); font-weight: 400; margin-left: 4px; }
+.bar { display: flex; gap: 8px; padding: 12px 16px; flex-wrap: wrap; align-items: center; }
+select, input[type=search], textarea { font: inherit; color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+input[type=search] { flex: 1; min-width: 180px; }
+main { padding: 0 16px 80px; max-width: 1100px; }
+.item { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px;
+  margin-bottom: 8px; display: grid; grid-template-columns: auto 1fr; gap: 4px 10px; }
+.item.sel { border-color: var(--accent); background: var(--accent-soft); }
+.item input[type=checkbox] { margin-top: 3px; }
+.text { white-space: pre-wrap; word-break: break-word; }
+.meta { grid-column: 2; display: flex; gap: 6px 12px; flex-wrap: wrap; color: var(--muted); font-size: 12px; align-items: center; }
+.pill { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; padding: 1px 6px; border-radius: 4px; }
+.pill.pending { color: var(--pending); background: var(--pending-bg); }
+.pill.decision { color: var(--decision); background: var(--decision-bg); }
+.pill.done { color: var(--done); background: var(--done-bg); }
+.pill.abandoned { color: var(--abandoned); background: var(--abandoned-bg); }
+.stale { color: var(--stale); font-weight: 600; }
+.chip { border: 1px solid var(--line); border-radius: 10px; padding: 0 8px; cursor: pointer; background: none;
+  color: var(--muted); font: inherit; font-size: 12px; max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip:hover { color: var(--text); border-color: var(--muted); }
+.actions { margin-left: auto; display: flex; gap: 4px; }
+button.btn { font: inherit; font-size: 12px; border: 1px solid var(--line); background: var(--panel); color: var(--text);
+  border-radius: 6px; padding: 3px 8px; cursor: pointer; }
+button.btn:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+.evidence { grid-column: 2; font-size: 12px; color: var(--muted); }
+.pair { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+.pair .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 6px 0 10px; }
+.pair .cols > div { border-left: 3px solid var(--line); padding-left: 8px; }
+.verdict { font-size: 12px; color: var(--muted); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.pill.duplicate { color: var(--accent); background: var(--accent-soft); }
+.pill.resolves { color: var(--done); background: var(--done-bg); }
+.pill.related, .pill.unrelated, .pill.unjudged { color: var(--abandoned); background: var(--abandoned-bg); }
+@media (max-width: 700px) { .pair .cols { grid-template-columns: 1fr; } }
+.selbar { position: fixed; bottom: 0; left: 0; right: 0; background: var(--panel); border-top: 1px solid var(--line);
+  padding: 10px 16px; display: none; gap: 8px; align-items: center; z-index: 6; }
+.selbar.on { display: flex; }
+dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 10px; width: min(640px, 92vw); }
+dialog textarea { width: 100%; min-height: 110px; }
+dialog .row { display: flex; gap: 8px; margin: 10px 0; align-items: center; flex-wrap: wrap; }
+.empty { color: var(--muted); padding: 30px 0; text-align: center; }
+.sess { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.sess h3 { margin: 0 0 4px; font-size: 14px; }
+.toast { position: fixed; top: 12px; right: 12px; background: var(--text); color: var(--bg); padding: 6px 12px; border-radius: 6px;
+  opacity: 0; transition: opacity .2s; z-index: 10; }
+.toast.on { opacity: 1; }
+code { font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Session Ledger <small id="summary"></small></h1>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+<div class="bar">
+  <select id="project"><option value="">All projects</option></select>
+  <input type="search" id="q" placeholder="Search items…">
+  <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="staleOnly"> stale only</label>
+  <select id="label" title="Judge verdict (duplicates tab)">
+    <option value="actionable">duplicate + resolves</option><option value="duplicate">duplicate</option>
+    <option value="resolves">resolves</option><option value="unjudged">not judged yet</option>
+    <option value="related">related</option><option value="unrelated">unrelated</option><option value="all">all candidates</option>
+  </select>
+</div>
+<main id="main"></main>
+<div class="selbar" id="selbar">
+  <span id="selcount"></span>
+  <button class="btn primary" id="mergeSel">Merge selected…</button>
+  <button class="btn" id="clearSel">Clear</button>
+</div>
+<dialog id="mergeDlg">
+  <form method="dialog">
+    <h3 style="margin-top:0">Merge items</h3>
+    <div class="row">Keep as canonical: <select id="canon"></select></div>
+    <div class="row">Type: <select id="mtype">
+      <option>pending</option><option>decision</option><option>done</option><option>abandoned</option></select></div>
+    <textarea id="mtext"></textarea>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok" id="mergeOk">Merge</button>
+    </div>
+  </form>
+</dialog>
+<div class="toast" id="toast"></div>
+
+<script>
+const STALE_DAYS = 14;
+const TABS = [
+  ["pending", "Pending"], ["decision", "Decided"], ["done", "Done"], ["abandoned", "Abandoned"],
+  ["dupes", "Review duplicates"], ["sessions", "Sessions"], ["merges", "Merge log"],
+];
+let S = { items: [], sessions: [], candidates: [], merges: [] };
+let tab = "pending";
+const sel = new Set();
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const day = ts => ts ? ts.slice(0, 10) : "?";
+const ageDays = ts => ts ? Math.floor((Date.now() - Date.parse(ts)) / 864e5) : null;
+const isStale = it => it.type === "pending" && ageDays(it.last_seen_at || it.raised_at) > STALE_DAYS;
+const sessById = () => Object.fromEntries(S.sessions.map(s => [s.id, s]));
+
+try { tab = localStorage.getItem("ledger.tab") || tab; } catch {}
+
+async function load() {
+  S = await (await fetch("/api/state")).json();
+  const projects = [...new Set(S.items.map(i => i.project).filter(Boolean))].sort();
+  const cur = $("project").value;
+  $("project").innerHTML = `<option value="">All projects</option>` + projects.map(p => `<option ${p === cur ? "selected" : ""}>${esc(p)}</option>`).join("");
+  for (const id of [...sel]) if (!S.items.find(i => i.id === id)) sel.delete(id);
+  render();
+}
+
+async function post(path, body, msg) {
+  const r = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) { toast(j.error || "error"); return false; }
+  toast(msg); await load(); return true;
+}
+
+function toast(m) { const t = $("toast"); t.textContent = m; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 1600); }
+
+function filtered() {
+  const p = $("project").value, q = $("q").value.toLowerCase(), staleOnly = $("staleOnly").checked;
+  return S.items.filter(i => (!p || i.project === p) && (!q || i.text.toLowerCase().includes(q)) && (!staleOnly || isStale(i)));
+}
+
+function labelMatch(c) {
+  const want = $("label").value, l = c.label || "unjudged";
+  return want === "all" || (want === "actionable" ? ["duplicate", "resolves"].includes(l) : l === want);
+}
+
+function renderTabs() {
+  const f = filtered();
+  const count = k => ["pending", "decision", "done", "abandoned"].includes(k) ? f.filter(i => i.type === k).length
+    : k === "dupes" ? S.candidates.filter(labelMatch).length : k === "sessions" ? S.sessions.length : S.merges.filter(m => !m.undone_at).length;
+  $("tabs").innerHTML = TABS.map(([k, l]) => `<button class="tab ${k === tab ? "on" : ""}" data-tab="${k}">${l}<span class="n">${count(k)}</span></button>`).join("");
+  const pend = S.items.filter(i => i.type === "pending");
+  const extracted = S.sessions.filter(s => s.extracted).length;
+  $("summary").textContent = `${pend.length} pending (${pend.filter(isStale).length} stale) · ${extracted}/${S.sessions.length} sessions extracted`;
+}
+
+function sessionChips(it) {
+  const by = sessById();
+  return it.sessions.map(id => {
+    const s = by[id] || {};
+    return `<button class="chip" data-session="${id}" title="${esc(s.title || s.first_prompt || id)}">${esc(s.title || id.slice(0, 8))}</button>`;
+  }).join("");
+}
+
+function itemHtml(it, { selectable = true, actions = true } = {}) {
+  const age = ageDays(it.raised_at);
+  const dates = it.type === "pending"
+    ? `raised ${day(it.raised_at)} · last seen ${day(it.last_seen_at)} · <span class="${isStale(it) ? "stale" : ""}">${age}d open</span>`
+    : `raised ${day(it.raised_at)} → ${it.type === "abandoned" ? "dropped" : "resolved"} ${day(it.resolved_at)}`;
+  return `<div class="item ${sel.has(it.id) ? "sel" : ""}" data-id="${it.id}">
+    ${selectable ? `<input type="checkbox" data-sel="${it.id}" ${sel.has(it.id) ? "checked" : ""} aria-label="select">` : "<span></span>"}
+    <div class="text">${esc(it.text)}</div>
+    ${it.evidence ? `<div class="evidence">evidence: ${esc(it.evidence)}</div>` : ""}
+    <div class="meta">
+      <span class="pill ${it.type}">${it.type}</span>
+      <span>${esc(it.project || "")}</span>
+      <span>${dates}</span>
+      ${it.merged_count ? `<span>merged ×${it.merged_count + 1}</span>` : ""}
+      ${it.edited ? `<span title="edited by you; re-extraction keeps it">✎</span>` : ""}
+      ${sessionChips(it)}
+      ${actions ? `<span class="actions">
+        <select data-type="${it.id}" aria-label="change type">${["pending", "decision", "done", "abandoned"].map(t => `<option ${t === it.type ? "selected" : ""}>${t}</option>`).join("")}</select>
+        <button class="btn" data-edit="${it.id}">Edit</button></span>` : ""}
+    </div></div>`;
+}
+
+function render() {
+  renderTabs();
+  const f = filtered(), m = $("main");
+  if (["pending", "decision", "done", "abandoned"].includes(tab)) {
+    let list = f.filter(i => i.type === tab);
+    list.sort(tab === "pending" ? (a, b) => (a.raised_at || "").localeCompare(b.raised_at || "")
+                                : (a, b) => (b.resolved_at || "").localeCompare(a.resolved_at || ""));
+    m.innerHTML = list.length ? list.map(i => itemHtml(i)).join("") : `<div class="empty">Nothing here.</div>`;
+  } else if (tab === "dupes") {
+    const byId = Object.fromEntries(S.items.map(i => [i.id, i]));
+    const p = $("project").value;
+    const pairs = S.candidates.filter(c => byId[c.a] && byId[c.b] && labelMatch(c) && (!p || byId[c.a].project === p || byId[c.b].project === p));
+    const pend = c => c.resolver === c.a ? c.b : c.a;
+    m.innerHTML = pairs.length ? pairs.map(c => `<div class="pair">
+      <div class="verdict"><span class="pill ${c.label || "unjudged"}">${c.label || "not judged"}</span>
+        <span>similarity ${c.score}</span>${c.reason ? `<span>${esc(c.reason)}</span>` : ""}</div>
+      <div class="cols"><div>${itemHtml(byId[c.a], { selectable: false, actions: false })}</div>
+                        <div>${itemHtml(byId[c.b], { selectable: false, actions: false })}</div></div>
+      ${c.label === "resolves" && byId[pend(c)]?.type === "pending"
+        ? `<button class="btn primary" data-resolve="${pend(c)},${c.resolver}">Close #${pend(c)} as done by #${c.resolver}</button>` : ""}
+      <button class="btn ${c.label === "resolves" ? "" : "primary"}" data-pairmerge="${c.a},${c.b}">Merge…</button>
+      <button class="btn" data-notdup="${c.a},${c.b}">Not a duplicate</button></div>`).join("")
+      : `<div class="empty">No duplicate candidates.</div>`;
+  } else if (tab === "sessions") {
+    const p = $("project").value;
+    m.innerHTML = S.sessions.filter(s => !p || s.project === p).map(s => {
+      const its = S.items.filter(i => i.sessions.includes(s.id));
+      const n = t => its.filter(i => i.type === t).length;
+      return `<div class="sess"><h3>${esc(s.title || s.first_prompt || s.id)}</h3>
+        <div class="meta" style="grid-column:auto">${esc(s.project || "")} · ${esc(s.branch || "")} · ${day(s.started_at)} → ${day(s.ended_at)} · ${s.user_msgs} prompts
+        · ${s.extracted ? `<span class="pill pending">${n("pending")} pending</span><span class="pill decision">${n("decision")}</span><span class="pill done">${n("done")}</span>` : "not extracted"}
+        ${s.extract_error ? `<span class="stale">extract failed</span>` : ""}
+        <span class="actions"><button class="btn" data-resume="${s.id}">Copy resume command</button></span></div>
+        ${s.summary ? `<div style="margin-top:6px">${esc(s.summary)}</div>` : ""}</div>`;
+    }).join("");
+  } else if (tab === "merges") {
+    const byId = Object.fromEntries(S.items.map(i => [i.id, i]));
+    m.innerHTML = S.merges.length ? S.merges.map(ev => `<div class="sess">
+      <div class="meta" style="grid-column:auto">${day(ev.at)} · kept #${ev.canonical_id}, absorbed ${JSON.parse(ev.absorbed_ids).map(a => "#" + a).join(", ")}
+      ${ev.undone_at ? `· undone ${day(ev.undone_at)}` : `<span class="actions"><button class="btn" data-undo="${ev.id}">Undo</button></span>`}</div>
+      <div style="margin-top:6px">${esc(byId[ev.canonical_id]?.text || JSON.parse(ev.before_state).text)}</div></div>`).join("")
+      : `<div class="empty">No merges yet.</div>`;
+  }
+  $("selbar").classList.toggle("on", sel.size > 0);
+  $("selcount").textContent = `${sel.size} selected`;
+  $("mergeSel").disabled = sel.size < 2;
+}
+
+function openMerge(ids) {
+  const its = ids.map(id => S.items.find(i => i.id === id)).sort((a, b) => (a.raised_at || "").localeCompare(b.raised_at || ""));
+  $("canon").innerHTML = its.map(i => `<option value="${i.id}">#${i.id} ${esc(i.text.slice(0, 70))}</option>`).join("");
+  const sync = () => { const c = its.find(i => i.id == $("canon").value); $("mtext").value = c.text; $("mtype").value = c.type; };
+  $("canon").onchange = sync; sync();
+  $("mergeDlg").returnValue = "";
+  $("mergeDlg").showModal();
+  $("mergeDlg").onclose = async () => {
+    if ($("mergeDlg").returnValue !== "ok") return;
+    const canonical = +$("canon").value;
+    if (await post("/api/merge", { canonical, absorbed: its.map(i => i.id).filter(i => i !== canonical),
+                                   text: $("mtext").value.trim(), type: $("mtype").value }, "Merged")) sel.clear(), render();
+  };
+}
+
+document.addEventListener("click", async e => {
+  const t = e.target.closest("[data-tab],[data-edit],[data-session],[data-resume],[data-notdup],[data-pairmerge],[data-undo],[data-resolve]");
+  if (!t) return;
+  const d = t.dataset;
+  if (d.tab) { tab = d.tab; try { localStorage.setItem("ledger.tab", tab); } catch {} render(); }
+  else if (d.edit) {
+    const it = S.items.find(i => i.id == d.edit);
+    const text = prompt("Edit item", it.text);
+    if (text && text.trim() !== it.text) post("/api/item", { id: it.id, text: text.trim() }, "Saved");
+  }
+  else if (d.session || d.resume) {
+    const s = sessById()[d.session || d.resume];
+    const cmd = `cd ${JSON.stringify(s.cwd || "~")} && claude --resume ${s.id}`;
+    try { await navigator.clipboard.writeText(cmd); toast("Resume command copied"); } catch { prompt("Resume command", cmd); }
+  }
+  else if (d.notdup) { const [a, b] = d.notdup.split(","); post("/api/not-duplicate", { a: +a, b: +b }, "Won't suggest again"); }
+  else if (d.pairmerge) openMerge(d.pairmerge.split(",").map(Number));
+  else if (d.undo) post("/api/undo", { event: +d.undo }, "Merge undone");
+  else if (d.resolve) { const [pending, resolver] = d.resolve.split(",").map(Number); post("/api/resolve", { pending, resolver }, `#${pending} closed`); }
+});
+document.addEventListener("change", e => {
+  const d = e.target.dataset;
+  if (d.sel) { e.target.checked ? sel.add(+d.sel) : sel.delete(+d.sel); render(); }
+  else if (d.type) post("/api/item", { id: +d.type, type: e.target.value }, `Marked ${e.target.value}`);
+});
+["project", "q", "staleOnly", "label"].forEach(id => $(id).addEventListener("input", render));
+$("mergeSel").onclick = () => openMerge([...sel]);
+$("clearSel").onclick = () => { sel.clear(); render(); };
+load();
+</script>
+</body>
+</html>

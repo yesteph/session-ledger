@@ -1,0 +1,12 @@
+[project]
+name = "session-ledger"
+version = "0.1.0"
+description = "Ledger of decisions, done work and pending threads across Claude Code sessions"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "fastembed>=0.9,<1",
+  "numpy>=2.1",
+]
+
+[tool.uv]
+package = false

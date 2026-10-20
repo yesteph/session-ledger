@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "ledger", "runtimeExecutable": "mise", "runtimeArgs": ["run", "serve"], "port": 8765 }
+  ]
+}

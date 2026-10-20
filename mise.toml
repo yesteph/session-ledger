@@ -1,0 +1,43 @@
+min_version = "2025.1.0"
+
+[tools]
+python = "3.13"   # fastembed/onnxruntime wheels are reliable on 3.13
+uv = "latest"
+
+[env]
+_.python.venv = { path = ".venv", create = true }
+
+[tasks.install]
+description = "Install Python dependencies into .venv"
+alias = "i"
+run = "uv sync"
+
+[tasks.ingest]
+description = "Scan Claude Code transcripts into the ledger"
+dir = "{{config_root}}/ledger"
+run = "python ingest.py"
+
+[tasks.extract]
+description = "Extract items from new or changed sessions"
+dir = "{{config_root}}/ledger"
+run = "python extract.py"
+
+[tasks.embed]
+description = "Embed active items whose text changed"
+dir = "{{config_root}}/ledger"
+run = "python embed.py"
+
+[tasks.judge]
+description = "Classify duplicate candidates with Claude"
+dir = "{{config_root}}/ledger"
+run = "python judge.py"
+
+[tasks.refresh]
+description = "Ingest, extract, embed and judge in one locked pass (used by the SessionEnd hook)"
+dir = "{{config_root}}/ledger"
+run = "python refresh.py"
+
+[tasks.serve]
+description = "Serve the review dashboard on http://127.0.0.1:8765"
+dir = "{{config_root}}/ledger"
+run = "python server.py"

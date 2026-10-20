@@ -1,0 +1,5 @@
+# The ledger database holds condensed transcript text, which can contain secrets. Never commit it.
+ledger/data/
+__pycache__/
+*.pyc
+.venv/
