@@ -14,9 +14,9 @@ Tools (Python 3.13, uv) and dependencies are managed by mise; tasks run from `le
 
 ```bash
 mise trust && mise install && mise run install   # setup (.venv via uv sync)
-mise run refresh    # full incremental pipeline: ingest -> extract -> embed -> judge (locked)
+mise run refresh    # full incremental pipeline: ingest -> extract -> embed -> judge -> cluster (locked)
 mise run serve      # dashboard on http://127.0.0.1:8765
-mise run ingest | extract | embed | judge        # single steps
+mise run ingest | extract | embed | judge | cluster   # single steps
 ```
 
 Useful flags (run inside `ledger/` with `mise exec -- python ...`):
@@ -45,9 +45,14 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
    on real data; see the comment), skipping `not_duplicate` pairs.
 4. **judge.py**: `claude -p` labels candidate pairs `duplicate | resolves | related | unrelated`, cached in
    `pair_judgment` keyed by a hash of both texts. `resolves` is only valid when the closed item is `pending`.
-5. **server.py** + **index.html**: stdlib HTTP server, one `/api/state` read plus POST actions
-   (`merge`, `undo`, `not-duplicate`, `resolve`, `item`). Single static page, no build step.
-6. **refresh.py**: runs steps 1-4 under an `fcntl` lock; concurrent callers drop a `refresh.pending`
+5. **cluster.py**: subjects are an LLM-maintained catalog with stable ids, not raw clusters. Bootstrap
+   (only when no subject exists) drafts the catalog from session summaries; `assign` files unassigned items
+   in parallel batches; `propose` creates subjects for leftovers. `item.subject_attempts` caps retries, so
+   one-off items stay unclassified instead of being re-sent every run.
+6. **server.py** + **index.html**: stdlib HTTP server, `/api/state` and `/api/brief?subject=` reads plus POST
+   actions (`merge`, `undo`, `not-duplicate`, `resolve`, `item`, `subject`, `subject-merge`, `subject-unmerge`,
+   `item-subject`). Single static page, no build step.
+7. **refresh.py**: runs steps 1-5 under an `fcntl` lock; concurrent callers drop a `refresh.pending`
    marker and the lock holder loops until it is gone.
 
 ### Invariants to preserve
@@ -55,7 +60,10 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
 - **Merges are non-destructive**: absorbed items get `merged_into = canonical`; `merge_event` stores a
   snapshot for undo. Readers treat `merged_into IS NULL` as active and gather sessions transitively.
 - **Human edits win**: anything edited, merged or resolved has `edited = 1` and must survive re-extraction.
-- **Headless `claude -p` calls must keep** `--no-session-persistence` (or they pollute the corpus) and
+  Items moved by hand have `subject_locked = 1`; clustering never moves them.
+- **Subject merges are non-destructive too**: `subject.merged_into` is resolved at read time
+  (`server.subject_resolver`); `item.subject_id` keeps the original value so unmerge restores it.
+- **Headless `claude -p` calls go through `claude_cli.structured`**, which must keep `--no-session-persistence` (or they pollute the corpus) and
   `--setting-sources ""` (or they load user hooks and re-trigger the SessionEnd hook recursively). They run in
   a temp cwd with `--tools ""`; transcript text is untrusted data.
 - `ledger/data/` holds condensed transcripts and may contain secrets: it is gitignored and must never be committed.

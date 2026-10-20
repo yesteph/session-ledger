@@ -76,6 +76,11 @@ dialog .row { display: flex; gap: 8px; margin: 10px 0; align-items: center; flex
 .empty { color: var(--muted); padding: 30px 0; text-align: center; }
 .sess { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .sess h3 { margin: 0 0 4px; font-size: 14px; }
+.subj { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.subj h3 { margin: 0 0 2px; font-size: 14px; }
+.subj .desc { color: var(--muted); font-size: 13px; margin-bottom: 6px; }
+.subj.merged { opacity: .6; }
+.chip.subject { color: var(--text); }
 .toast { position: fixed; top: 12px; right: 12px; background: var(--text); color: var(--bg); padding: 6px 12px; border-radius: 6px;
   opacity: 0; transition: opacity .2s; z-index: 10; }
 .toast.on { opacity: 1; }
@@ -89,6 +94,7 @@ code { font-size: 12px; }
 </header>
 <div class="bar">
   <select id="project"><option value="">All projects</option></select>
+  <select id="subject" title="Subject"><option value="">All subjects</option></select>
   <input type="search" id="q" placeholder="Search items…">
   <label style="font-size:12px;color:var(--muted)"><input type="checkbox" id="staleOnly"> stale only</label>
   <select id="label" title="Judge verdict (duplicates tab)">
@@ -116,16 +122,26 @@ code { font-size: 12px; }
     </div>
   </form>
 </dialog>
+<dialog id="pickDlg">
+  <form method="dialog">
+    <h3 style="margin-top:0" id="pickTitle"></h3>
+    <div class="row"><select id="pickSel" style="width:100%"></select></div>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn" value="cancel">Cancel</button>
+      <button class="btn primary" value="ok">OK</button>
+    </div>
+  </form>
+</dialog>
 <div class="toast" id="toast"></div>
 
 <script>
 const STALE_DAYS = 14;
 const TABS = [
-  ["pending", "Pending"], ["decision", "Decided"], ["done", "Done"], ["abandoned", "Abandoned"],
+  ["subjects", "Subjects"], ["pending", "Pending"], ["decision", "Decided"], ["done", "Done"], ["abandoned", "Abandoned"],
   ["dupes", "Review duplicates"], ["sessions", "Sessions"], ["merges", "Merge log"],
 ];
-let S = { items: [], sessions: [], candidates: [], merges: [] };
-let tab = "pending";
+let S = { items: [], sessions: [], subjects: [], candidates: [], merges: [] };
+let tab = "subjects";
 const sel = new Set();
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
@@ -141,6 +157,10 @@ async function load() {
   const projects = [...new Set(S.items.map(i => i.project).filter(Boolean))].sort();
   const cur = $("project").value;
   $("project").innerHTML = `<option value="">All projects</option>` + projects.map(p => `<option ${p === cur ? "selected" : ""}>${esc(p)}</option>`).join("");
+  const cs = $("subject").value;
+  $("subject").innerHTML = `<option value="">All subjects</option><option value="none" ${cs === "none" ? "selected" : ""}>Unclassified</option>` +
+    activeSubjects().sort((a, b) => a.name.localeCompare(b.name))
+      .map(x => `<option value="${x.id}" ${String(x.id) === cs ? "selected" : ""}>${esc(x.name)}</option>`).join("");
   for (const id of [...sel]) if (!S.items.find(i => i.id === id)) sel.delete(id);
   render();
 }
@@ -154,9 +174,13 @@ async function post(path, body, msg) {
 
 function toast(m) { const t = $("toast"); t.textContent = m; t.classList.add("on"); setTimeout(() => t.classList.remove("on"), 1600); }
 
+const activeSubjects = () => S.subjects.filter(x => !x.merged_into);
+const subjById = () => Object.fromEntries(S.subjects.map(x => [x.id, x]));
+
 function filtered() {
-  const p = $("project").value, q = $("q").value.toLowerCase(), staleOnly = $("staleOnly").checked;
-  return S.items.filter(i => (!p || i.project === p) && (!q || i.text.toLowerCase().includes(q)) && (!staleOnly || isStale(i)));
+  const p = $("project").value, q = $("q").value.toLowerCase(), staleOnly = $("staleOnly").checked, sj = $("subject").value;
+  return S.items.filter(i => (!p || i.project === p) && (!q || i.text.toLowerCase().includes(q)) && (!staleOnly || isStale(i))
+    && (!sj || (sj === "none" ? !i.subject_id : String(i.subject_id) === sj)));
 }
 
 function labelMatch(c) {
@@ -167,6 +191,7 @@ function labelMatch(c) {
 function renderTabs() {
   const f = filtered();
   const count = k => ["pending", "decision", "done", "abandoned"].includes(k) ? f.filter(i => i.type === k).length
+    : k === "subjects" ? activeSubjects().length
     : k === "dupes" ? S.candidates.filter(labelMatch).length : k === "sessions" ? S.sessions.length : S.merges.filter(m => !m.undone_at).length;
   $("tabs").innerHTML = TABS.map(([k, l]) => `<button class="tab ${k === tab ? "on" : ""}" data-tab="${k}">${l}<span class="n">${count(k)}</span></button>`).join("");
   const pend = S.items.filter(i => i.type === "pending");
@@ -197,6 +222,7 @@ function itemHtml(it, { selectable = true, actions = true } = {}) {
       <span>${dates}</span>
       ${it.merged_count ? `<span>merged ×${it.merged_count + 1}</span>` : ""}
       ${it.edited ? `<span title="edited by you; re-extraction keeps it">✎</span>` : ""}
+      <button class="chip subject" data-move="${it.id}" title="Move to another subject">▸ ${esc(subjById()[it.subject_id]?.name || "Unclassified")}</button>
       ${sessionChips(it)}
       ${actions ? `<span class="actions">
         <select data-type="${it.id}" aria-label="change type">${["pending", "decision", "done", "abandoned"].map(t => `<option ${t === it.type ? "selected" : ""}>${t}</option>`).join("")}</select>
@@ -206,12 +232,46 @@ function itemHtml(it, { selectable = true, actions = true } = {}) {
 
 function render() {
   renderTabs();
+  $("label").hidden = tab !== "dupes";
   const f = filtered(), m = $("main");
   if (["pending", "decision", "done", "abandoned"].includes(tab)) {
     let list = f.filter(i => i.type === tab);
     list.sort(tab === "pending" ? (a, b) => (a.raised_at || "").localeCompare(b.raised_at || "")
                                 : (a, b) => (b.resolved_at || "").localeCompare(a.resolved_at || ""));
     m.innerHTML = list.length ? list.map(i => itemHtml(i)).join("") : `<div class="empty">Nothing here.</div>`;
+  } else if (tab === "subjects") {
+    const p = $("project").value, q = $("q").value.toLowerCase();
+    const groups = {};
+    for (const i of S.items) (groups[i.subject_id || "none"] ||= []).push(i);
+    const stats = its => {
+      const n = t => its.filter(i => i.type === t).length;
+      const last = its.map(i => i.last_seen_at || i.resolved_at || i.raised_at || "").sort().pop();
+      return { pending: n("pending"), stale: its.filter(isStale).length, decision: n("decision"), done: n("done"),
+               sessions: new Set(its.flatMap(i => i.sessions)).size, last,
+               projects: [...new Set(its.map(i => i.project).filter(Boolean))] };
+    };
+    const rows = activeSubjects().map(x => ({ x, its: groups[x.id] || [] })).map(r => ({ ...r, st: stats(r.its) }))
+      .filter(r => (!p || r.st.projects.includes(p)) && (!q || (r.x.name + " " + (r.x.description || "")).toLowerCase().includes(q)))
+      .sort((a, b) => b.st.pending - a.st.pending || (b.st.last || "").localeCompare(a.st.last || ""));
+    const card = r => `<div class="subj"><h3>${esc(r.x.name)}</h3>
+      <div class="desc">${esc(r.x.description || "")}</div>
+      <div class="meta" style="grid-column:auto">
+        <span class="pill pending">${r.st.pending} pending</span>${r.st.stale ? `<span class="stale">${r.st.stale} stale</span>` : ""}
+        <span class="pill decision">${r.st.decision} decided</span><span class="pill done">${r.st.done} done</span>
+        <span>${r.st.sessions} sessions · last activity ${day(r.st.last)}</span><span>${esc(r.st.projects.join(", "))}</span>
+        <span class="actions">
+          <button class="btn primary" data-open="${r.x.id}">Items</button>
+          <button class="btn" data-brief="${r.x.id}" title="Copy a markdown brief to continue this subject in a new session">Copy brief</button>
+          <button class="btn" data-rename="${r.x.id}">Rename</button>
+          <button class="btn" data-smerge="${r.x.id}">Merge into…</button>
+        </span></div></div>`;
+    const unclassified = (groups.none || []).length;
+    const merged = S.subjects.filter(x => x.merged_into);
+    m.innerHTML = (rows.length ? rows.map(card).join("") : `<div class="empty">No subjects.</div>`)
+      + (unclassified ? `<div class="subj"><h3>Unclassified</h3><div class="meta" style="grid-column:auto">${unclassified} items
+          <span class="actions"><button class="btn" data-open="none">Items</button></span></div></div>` : "")
+      + merged.map(x => `<div class="subj merged"><div class="meta" style="grid-column:auto">${esc(x.name)} → merged into ${esc(subjById()[x.merged_into]?.name || "#" + x.merged_into)}
+          <span class="actions"><button class="btn" data-sunmerge="${x.id}">Unmerge</button></span></div></div>`).join("");
   } else if (tab === "dupes") {
     const byId = Object.fromEntries(S.items.map(i => [i.id, i]));
     const p = $("project").value;
@@ -252,6 +312,16 @@ function render() {
   $("mergeSel").disabled = sel.size < 2;
 }
 
+function pick(title, options, current) {
+  return new Promise(resolve => {
+    $("pickTitle").textContent = title;
+    $("pickSel").innerHTML = options.map(([v, l]) => `<option value="${v}" ${v === current ? "selected" : ""}>${esc(l)}</option>`).join("");
+    $("pickDlg").returnValue = "";
+    $("pickDlg").onclose = () => resolve($("pickDlg").returnValue === "ok" ? $("pickSel").value : null);
+    $("pickDlg").showModal();
+  });
+}
+
 function openMerge(ids) {
   const its = ids.map(id => S.items.find(i => i.id === id)).sort((a, b) => (a.raised_at || "").localeCompare(b.raised_at || ""));
   $("canon").innerHTML = its.map(i => `<option value="${i.id}">#${i.id} ${esc(i.text.slice(0, 70))}</option>`).join("");
@@ -268,7 +338,7 @@ function openMerge(ids) {
 }
 
 document.addEventListener("click", async e => {
-  const t = e.target.closest("[data-tab],[data-edit],[data-session],[data-resume],[data-notdup],[data-pairmerge],[data-undo],[data-resolve]");
+  const t = e.target.closest("[data-tab],[data-edit],[data-session],[data-resume],[data-notdup],[data-pairmerge],[data-undo],[data-resolve],[data-move],[data-open],[data-brief],[data-rename],[data-smerge],[data-sunmerge]");
   if (!t) return;
   const d = t.dataset;
   if (d.tab) { tab = d.tab; try { localStorage.setItem("ledger.tab", tab); } catch {} render(); }
@@ -285,6 +355,28 @@ document.addEventListener("click", async e => {
   else if (d.notdup) { const [a, b] = d.notdup.split(","); post("/api/not-duplicate", { a: +a, b: +b }, "Won't suggest again"); }
   else if (d.pairmerge) openMerge(d.pairmerge.split(",").map(Number));
   else if (d.undo) post("/api/undo", { event: +d.undo }, "Merge undone");
+  else if (d.open) { $("subject").value = d.open; tab = "pending"; render(); }
+  else if (d.brief) {
+    const md = await (await fetch(`/api/brief?subject=${d.brief}`)).text();
+    try { await navigator.clipboard.writeText(md); toast("Brief copied"); } catch { prompt("Brief", md); }
+  }
+  else if (d.rename) {
+    const x = subjById()[d.rename], name = prompt("Subject name", x.name);
+    if (name && name.trim() !== x.name) post("/api/subject", { id: x.id, name: name.trim() }, "Renamed");
+  }
+  else if (d.smerge) {
+    const x = subjById()[d.smerge];
+    const into = await pick(`Merge "${x.name}" into`, activeSubjects().filter(y => y.id !== x.id)
+      .sort((a, b) => a.name.localeCompare(b.name)).map(y => [String(y.id), y.name]));
+    if (into) post("/api/subject-merge", { from: x.id, into: +into }, "Subjects merged");
+  }
+  else if (d.sunmerge) post("/api/subject-unmerge", { id: +d.sunmerge }, "Subject restored");
+  else if (d.move) {
+    const it = S.items.find(i => i.id == d.move);
+    const to = await pick("Move item to subject", [["none", "Unclassified"], ...activeSubjects()
+      .sort((a, b) => a.name.localeCompare(b.name)).map(y => [String(y.id), y.name])], String(it.subject_id || "none"));
+    if (to !== null) post("/api/item-subject", { id: it.id, subject: to === "none" ? null : +to }, "Item moved");
+  }
   else if (d.resolve) { const [pending, resolver] = d.resolve.split(",").map(Number); post("/api/resolve", { pending, resolver }, `#${pending} closed`); }
 });
 document.addEventListener("change", e => {
@@ -292,7 +384,7 @@ document.addEventListener("change", e => {
   if (d.sel) { e.target.checked ? sel.add(+d.sel) : sel.delete(+d.sel); render(); }
   else if (d.type) post("/api/item", { id: +d.type, type: e.target.value }, `Marked ${e.target.value}`);
 });
-["project", "q", "staleOnly", "label"].forEach(id => $(id).addEventListener("input", render));
+["project", "subject", "q", "staleOnly", "label"].forEach(id => $(id).addEventListener("input", render));
 $("mergeSel").onclick = () => openMerge([...sel]);
 $("clearSel").onclick = () => { sel.clear(); render(); };
 load();

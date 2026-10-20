@@ -17,7 +17,12 @@ so open threads spread across many conversations are not lost, and duplicates ca
    cross-session pairs above cosine 0.85.
 4. `judge.py` asks Claude to label each pair: `duplicate`, `resolves` (closes a pending item),
    `related` or `unrelated`. Verdicts are cached and invalidated when a text changes.
-5. `server.py` serves the review dashboard and a JSON API over SQLite (`ledger/data/ledger.db`).
+5. `cluster.py` files items under subjects (named workstreams spanning sessions). The first run drafts
+   a catalog from session summaries; later runs assign only new items and create subjects for items
+   no existing subject fits.
+6. `server.py` serves the review dashboard and a JSON API over SQLite (`ledger/data/ledger.db`).
+   The Subjects tab shows pending/decided/done per subject and copies a markdown brief to continue a
+   subject in a new session.
 
 Merges are non-destructive: absorbed items point at the canonical item, every merge is logged
 with a snapshot, and can be undone. Pairs marked "not a duplicate" are never suggested again.
@@ -40,7 +45,7 @@ mise run refresh   # ingest -> extract -> embed -> judge, locked, incremental
 mise run serve     # http://127.0.0.1:8765
 ```
 
-Individual steps: `mise run ingest|extract|embed|judge`.
+Individual steps: `mise run ingest|extract|embed|judge|cluster`.
 
 ## Automatic refresh
 
@@ -50,5 +55,4 @@ behind a lock instead of running twice. Output goes to `ledger/data/refresh.log`
 
 ## Not built yet
 
-- Subjects: clustering items across sessions into named subjects.
 - Scheduled refresh as a fallback when sessions are killed without a SessionEnd event.

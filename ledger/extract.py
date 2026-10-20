@@ -8,11 +8,10 @@ Usage: python3 extract.py [--limit N] [--model sonnet] [--workers 4] [--session 
 """
 import argparse
 import json
-import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from claude_cli import structured
 from db import connect
 
 SYSTEM = """You audit a Claude Code working session and produce a ledger of its outcomes.
@@ -59,19 +58,7 @@ SCHEMA = {
 
 
 def call_claude(prompt, model):
-    # Run from a temp dir so no project CLAUDE.md or settings leak into the extraction.
-    with tempfile.TemporaryDirectory() as cwd:
-        proc = subprocess.run(
-            ["claude", "-p", "--model", model, "--no-session-persistence", "--tools", "",
-             "--setting-sources", "", "--system-prompt", SYSTEM,
-             "--output-format", "json", "--json-schema", json.dumps(SCHEMA)],
-            input=prompt, capture_output=True, text=True, cwd=cwd, timeout=600)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip()[-500:] or proc.stdout.strip()[-500:])
-    out = json.loads(proc.stdout)
-    if out.get("is_error") or not out.get("structured_output"):
-        raise RuntimeError(f"no structured output: {str(out.get('result'))[:300]}")
-    return out["structured_output"], out.get("total_cost_usd", 0)
+    return structured(prompt, SYSTEM, SCHEMA, model)
 
 
 def store(conn, session, result):

@@ -1,4 +1,4 @@
-"""One locked pass: ingest -> extract -> embed -> judge. Triggered by the SessionEnd hook.
+"""One locked pass: ingest -> extract -> embed -> judge -> cluster. Triggered by the SessionEnd hook.
 
 Several sessions can end at once. Only one refresh runs; others leave a "pending" marker
 and exit, and the running pass loops until no marker is left, so no change is missed.
@@ -14,7 +14,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
 LOCK = os.path.join(DATA, "refresh.lock")
 PENDING = os.path.join(DATA, "refresh.pending")
-STEPS = [["ingest.py"], ["extract.py", "--limit", "50"], ["embed.py"], ["judge.py"]]
+STEPS = [["ingest.py"], ["extract.py", "--limit", "50"], ["embed.py"], ["judge.py"], ["cluster.py"]]
 
 
 def log(msg):

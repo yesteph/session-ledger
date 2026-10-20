@@ -11,6 +11,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import embed
 import judge
@@ -41,11 +42,60 @@ def items(conn):
             out += family(c)
         return out
 
+    resolve = subject_resolver(conn)
     for r in rows:
         fam = family(r["id"])
         r["merged_count"] = len(fam) - 1
         r["sessions"] = sorted({s for i in fam for s in sessions[i]})
+        r["subject_id"] = resolve(r["subject_id"])
     return rows
+
+
+def subject_resolver(conn):
+    """Map a subject id to the active subject it was (possibly transitively) merged into."""
+    parent = {r["id"]: r["merged_into"] for r in conn.execute("SELECT id, merged_into FROM subject")}
+
+    def resolve(sid):
+        seen = set()
+        while sid is not None and parent.get(sid) is not None and sid not in seen:
+            seen.add(sid)
+            sid = parent[sid]
+        return sid if sid in parent else None
+    return resolve
+
+
+def subjects(conn):
+    return [dict(r) for r in conn.execute("SELECT * FROM subject ORDER BY id")]
+
+
+def brief(conn, sid):
+    """Markdown context pack to continue a subject in a fresh session."""
+    subj = conn.execute("SELECT * FROM subject WHERE id=?", (sid,)).fetchone()
+    if not subj:
+        raise ValueError("subject not found")
+    its = [i for i in items(conn) if i["subject_id"] == subj["id"]]
+    by_sid = {s["id"]: s for s in sessions(conn)}
+    sess = sorted({s for i in its for s in i["sessions"] if s in by_sid}, key=lambda s: by_sid[s]["started_at"] or "")
+    day = lambda ts: (ts or "?")[:10]
+    out = [f"# {subj['name']}", "", subj["description"] or "", "",
+           f"Context brief from the session ledger, {now()[:10]}: what was decided, done and left open "
+           "across the sessions below. Continue from the pending items.", "", f"## Sessions ({len(sess)})"]
+    for s in sess:
+        x = by_sid[s]
+        out.append(f"- {day(x['started_at'])} → {day(x['ended_at'])} · {x['title'] or x['first_prompt'][:60]} "
+                   f"· {x['project']} · `cd {json.dumps(x['cwd'] or '~')} && claude --resume {x['id']}`")
+    sections = (("Decisions", "decision", "resolved_at", True), ("Done", "done", "resolved_at", True),
+                ("Pending (oldest first)", "pending", "raised_at", False), ("Abandoned", "abandoned", "resolved_at", True))
+    for title, t, key, desc in sections:
+        group = sorted((i for i in its if i["type"] == t), key=lambda i: i[key] or "", reverse=desc)
+        if not group:
+            continue
+        out += ["", f"## {title} ({len(group)})"]
+        for i in group:
+            when = (f"raised {day(i['raised_at'])}, last seen {day(i['last_seen_at'])}" if t == "pending"
+                    else day(i["resolved_at"]))
+            out.append(f"- [{when}] {i['text']}")
+    return "\n".join(out) + "\n"
 
 
 def sessions(conn):
@@ -131,6 +181,35 @@ def resolve(conn, pending_id, resolver_id):
     conn.commit()
 
 
+def edit_subject(conn, sid, name=None, description=None):
+    row = conn.execute("SELECT * FROM subject WHERE id=?", (sid,)).fetchone()
+    if not row:
+        raise ValueError("subject not found")
+    conn.execute("UPDATE subject SET name=?, description=?, edited=1 WHERE id=?",
+                 (name or row["name"], row["description"] if description is None else description, sid))
+    conn.commit()
+
+
+def merge_subject(conn, src, into):
+    resolve = subject_resolver(conn)
+    if resolve(int(into)) == int(src) or int(src) == int(into):
+        raise ValueError("cannot merge a subject into itself")
+    conn.execute("UPDATE subject SET merged_into=? WHERE id=? AND merged_into IS NULL", (resolve(int(into)), src))
+    conn.commit()
+
+
+def unmerge_subject(conn, sid):
+    conn.execute("UPDATE subject SET merged_into=NULL WHERE id=?", (sid,))
+    conn.commit()
+
+
+def move_item(conn, iid, sid):
+    if sid is not None and not conn.execute("SELECT 1 FROM subject WHERE id=?", (sid,)).fetchone():
+        raise ValueError("subject not found")
+    conn.execute("UPDATE item SET subject_id=?, subject_locked=1 WHERE id=?", (sid, iid))
+    conn.commit()
+
+
 def edit(conn, iid, text=None, type_=None):
     row = conn.execute("SELECT * FROM item WHERE id=?", (iid,)).fetchone()
     if not row:
@@ -161,9 +240,14 @@ class Handler(BaseHTTPRequestHandler):
         conn = connect()
         try:
             if path == "/api/state":
-                return self._send(200, {"items": items(conn), "sessions": sessions(conn),
+                return self._send(200, {"items": items(conn), "sessions": sessions(conn), "subjects": subjects(conn),
                                         "candidates": candidates(conn), "merges": merges(conn)})
+            if path == "/api/brief":
+                sid = int(parse_qs(urlparse(self.path).query).get("subject", ["0"])[0])
+                return self._send(200, brief(conn, sid).encode(), "text/markdown; charset=utf-8")
             self._send(404, {"error": "not found"})
+        except ValueError as e:
+            self._send(400, {"error": str(e)})
         finally:
             conn.close()
 
@@ -179,6 +263,14 @@ class Handler(BaseHTTPRequestHandler):
                 not_duplicate(conn, body["a"], body["b"])
             elif self.path == "/api/resolve":
                 resolve(conn, body["pending"], body["resolver"])
+            elif self.path == "/api/subject":
+                edit_subject(conn, body["id"], body.get("name"), body.get("description"))
+            elif self.path == "/api/subject-merge":
+                merge_subject(conn, body["from"], body["into"])
+            elif self.path == "/api/subject-unmerge":
+                unmerge_subject(conn, body["id"])
+            elif self.path == "/api/item-subject":
+                move_item(conn, body["id"], body.get("subject"))
             elif self.path == "/api/item":
                 edit(conn, body["id"], body.get("text"), body.get("type"))
             else:

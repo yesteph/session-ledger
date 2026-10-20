@@ -32,8 +32,13 @@ description = "Classify duplicate candidates with Claude"
 dir = "{{config_root}}/ledger"
 run = "python judge.py"
 
+[tasks.cluster]
+description = "File items under subjects (bootstraps the catalog on first run)"
+dir = "{{config_root}}/ledger"
+run = "python cluster.py"
+
 [tasks.refresh]
-description = "Ingest, extract, embed and judge in one locked pass (used by the SessionEnd hook)"
+description = "Ingest, extract, embed, judge and cluster in one locked pass (used by the SessionEnd hook)"
 dir = "{{config_root}}/ledger"
 run = "python refresh.py"
 

@@ -27,6 +27,15 @@ CREATE TABLE IF NOT EXISTS session (
   extract_error TEXT
 );
 
+CREATE TABLE IF NOT EXISTS subject (
+  id            INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL,
+  description   TEXT,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  merged_into   INTEGER REFERENCES subject(id),  -- non-destructive subject merge; readers follow the chain
+  edited        INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS item (
   id            INTEGER PRIMARY KEY,
   type          TEXT NOT NULL CHECK (type IN ('decision','done','pending','abandoned')),
@@ -94,4 +103,10 @@ def connect():
     for col in ("content_hash", "extracted_hash"):
         if col not in cols:
             conn.execute(f"ALTER TABLE session ADD COLUMN {col} TEXT")
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(item)")}
+    for col, decl in (("subject_id", "INTEGER REFERENCES subject(id)"),
+                      ("subject_locked", "INTEGER NOT NULL DEFAULT 0"),    # set by a human; clustering never moves it
+                      ("subject_attempts", "INTEGER NOT NULL DEFAULT 0")):  # assignment passes that found no subject
+        if col not in cols:
+            conn.execute(f"ALTER TABLE item ADD COLUMN {col} {decl}")
     return conn

@@ -7,13 +7,11 @@ Usage: python judge.py [--model sonnet] [--batch 25] [--workers 4] [--limit N]
 """
 import argparse
 import hashlib
-import json
-import subprocess
 import sys
-import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import embed
+from claude_cli import structured
 from db import connect
 
 SYSTEM = """You review pairs of items from a work ledger built from Claude Code sessions.
@@ -51,18 +49,8 @@ def run_batch(batch, items, model):
         for iid in (p["a"], p["b"]):
             it = items[iid]
             lines.append(f"  #{iid} [{it['type']}, {(it['raised_at'] or '')[:10]}, {it['project']}] {it['text']}")
-    with tempfile.TemporaryDirectory() as cwd:
-        proc = subprocess.run(
-            ["claude", "-p", "--model", model, "--no-session-persistence", "--tools", "",
-             "--setting-sources", "", "--system-prompt", SYSTEM,
-             "--output-format", "json", "--json-schema", json.dumps(SCHEMA)],
-            input="\n".join(lines), capture_output=True, text=True, cwd=cwd, timeout=600)
-    if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip()[-500:] or proc.stdout.strip()[-500:])
-    out = json.loads(proc.stdout)
-    if out.get("is_error") or not out.get("structured_output"):
-        raise RuntimeError(f"no structured output: {str(out.get('result'))[:300]}")
-    return out["structured_output"]["verdicts"], out.get("total_cost_usd", 0)
+    out, cost = structured("\n".join(lines), SYSTEM, SCHEMA, model)
+    return out["verdicts"], cost
 
 
 def main():
