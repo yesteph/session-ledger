@@ -93,6 +93,32 @@ CREATE TABLE IF NOT EXISTS pair_judgment (
   PRIMARY KEY (a, b)
 );
 
+CREATE TABLE IF NOT EXISTS run (
+  id            INTEGER PRIMARY KEY,
+  trigger       TEXT NOT NULL,      -- hook | schedule | manual
+  session_id    TEXT,               -- hook runs: the session that ended
+  reason        TEXT,               -- hook runs: SessionEnd reason
+  started_at    TEXT NOT NULL,
+  ended_at      TEXT,
+  status        TEXT NOT NULL,      -- queued (folded into a running pass) | running | ok | failed
+  passes        INTEGER NOT NULL DEFAULT 0,
+  steps         TEXT                -- JSON: [{"step", "exit", "seconds"}] of the last pass
+);
+
+CREATE TABLE IF NOT EXISTS llm_call (
+  id            INTEGER PRIMARY KEY,
+  at            TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  run_id        INTEGER,            -- set when called from a refresh run
+  step          TEXT NOT NULL,      -- extract | judge | cluster | ...
+  model         TEXT,
+  ok            INTEGER NOT NULL,
+  input_tokens  INTEGER, output_tokens INTEGER, cache_read_tokens INTEGER, cache_write_tokens INTEGER,
+  cost_usd      REAL,
+  seconds       REAL,
+  error         TEXT
+);
+CREATE INDEX IF NOT EXISTS llm_call_at ON llm_call(at);
+
 CREATE TABLE IF NOT EXISTS not_duplicate (
   a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY (a, b)
 );

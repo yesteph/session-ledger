@@ -89,6 +89,30 @@ dialog .row { display: flex; gap: 8px; margin: 10px 0; align-items: center; flex
 .section:not([open]) > summary h2::before { content: "▸ "; }
 .section > summary .meta { grid-column: auto; flex: 1; }
 .chip.subject { color: var(--text); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; margin-bottom: 14px; }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; }
+.tile .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; }
+.tile .v { font-size: 22px; font-weight: 600; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.tile .s { font-size: 12px; color: var(--muted); }
+.status { font-weight: 600; }
+.status.ok { color: var(--done); } .status.warn { color: var(--pending); } .status.bad { color: var(--stale); }
+h2.mon { font-size: 14px; margin: 18px 0 8px; }
+table.mon { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  font-size: 13px; font-variant-numeric: tabular-nums; }
+table.mon th, table.mon td { text-align: left; padding: 6px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+table.mon th { color: var(--muted); font-weight: 500; font-size: 12px; }
+table.mon td.n, table.mon th.n { text-align: right; }
+.tablewrap { overflow-x: auto; }
+.chart { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; position: relative; }
+.chart svg { display: block; width: 100%; height: 140px; }
+.chart .bar { fill: var(--accent); }
+.chart .hit:hover + .bar, .chart .bar.on { opacity: .75; }
+.chart .axis { stroke: var(--line); }
+.chart text { fill: var(--muted); font-size: 11px; }
+.tip { position: absolute; pointer-events: none; background: var(--text); color: var(--bg); font-size: 12px; padding: 4px 8px;
+  border-radius: 4px; white-space: nowrap; transform: translate(-50%, -110%); display: none; }
+pre.log { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px;
+  overflow: auto; max-height: 360px; white-space: pre-wrap; }
 .toast { position: fixed; top: 12px; right: 12px; background: var(--text); color: var(--bg); padding: 6px 12px; border-radius: 6px;
   opacity: 0; transition: opacity .2s; z-index: 10; }
 .toast.on { opacity: 1; }
@@ -146,8 +170,9 @@ code { font-size: 12px; }
 const STALE_DAYS = 14;
 const TABS = [
   ["subjects", "Subjects"], ["pending", "Pending"], ["decision", "Decided"], ["done", "Done"], ["abandoned", "Abandoned"],
-  ["dupes", "Review duplicates"], ["sessions", "Sessions"], ["merges", "Merge log"],
+  ["dupes", "Review duplicates"], ["sessions", "Sessions"], ["merges", "Merge log"], ["monitor", "Monitor"],
 ];
+let M = null;  // monitoring snapshot, loaded on demand
 let S = { items: [], sessions: [], subjects: [], sections: [], candidates: [], merges: [] };
 let collapsed = new Set();
 try { collapsed = new Set(JSON.parse(localStorage.getItem("ledger.collapsed") || "[]")); } catch {}
@@ -215,6 +240,7 @@ function labelMatch(c) {
 function renderTabs() {
   const f = filtered();
   const count = k => ["pending", "decision", "done", "abandoned"].includes(k) ? f.filter(i => i.type === k).length
+    : k === "monitor" ? (M && (M.failed_7d || !M.hook.installed || !M.schedule.loaded) ? "!" : "")
     : k === "subjects" ? activeSubjects().length
     : k === "dupes" ? S.candidates.filter(labelMatch).length : k === "sessions" ? S.sessions.length : S.merges.filter(m => !m.undone_at).length;
   $("tabs").innerHTML = TABS.map(([k, l]) => `<button class="tab ${k === tab ? "on" : ""}" data-tab="${k}">${l}<span class="n">${count(k)}</span></button>`).join("");
@@ -263,6 +289,10 @@ function render() {
     list.sort(tab === "pending" ? (a, b) => (a.raised_at || "").localeCompare(b.raised_at || "")
                                 : (a, b) => (b.resolved_at || "").localeCompare(a.resolved_at || ""));
     m.innerHTML = list.length ? list.map(i => itemHtml(i)).join("") : `<div class="empty">Nothing here.</div>`;
+  } else if (tab === "monitor") {
+    if (!M) { m.innerHTML = `<div class="empty">Loading…</div>`; loadMonitor(); return; }
+    m.innerHTML = monitorHtml(M);
+    wireChart();
   } else if (tab === "subjects") {
     const p = $("project").value, q = $("q").value.toLowerCase();
     const groups = {};
@@ -349,6 +379,101 @@ function render() {
   $("mergeSel").disabled = sel.size < 2;
 }
 
+const ago = ts => {
+  if (!ts) return "never";
+  const s = (Date.now() - Date.parse(ts)) / 1000;
+  return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : s < 129600 ? `${Math.round(s / 3600)} h ago` : `${Math.round(s / 86400)} d ago`;
+};
+const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n || 0);
+const statusHtml = (cls, label) => `<span class="status ${cls}">${{ ok: "✓", warn: "!", bad: "✕" }[cls]} ${esc(label)}</span>`;
+const runStatus = st => ({ ok: ["ok", "ok"], failed: ["bad", "failed"], running: ["warn", "running"], queued: ["warn", "queued"] }[st] || ["warn", st]);
+
+async function loadMonitor() {
+  try { M = await (await fetch("/api/monitor")).json(); } catch { return; }
+  if (tab === "monitor") render(); else renderTabs();
+}
+setInterval(() => { if (tab === "monitor" && !document.hidden) loadMonitor(); }, 30000);
+
+function monitorHtml(M) {
+  const h = M.hook, sc = M.schedule, last = M.runs[0], c = M.corpus;
+  const hookTile = `<div class="tile"><div class="k">SessionEnd hook</div>
+    <div class="v">${h.installed ? statusHtml("ok", "Installed") : statusHtml("bad", "Not installed")}</div>
+    <div class="s">last fired ${ago(h.last)} · ${h.count_24h} in 24 h · ${h.count_7d} in 7 d</div></div>`;
+  const schedCls = !sc.loaded ? "bad" : sc.last_exit_code && sc.last_exit_code !== "0" && sc.last_exit_code !== "(never exited)" ? "warn" : "ok";
+  const schedTile = `<div class="tile"><div class="k">Hourly schedule (launchd)</div>
+    <div class="v">${statusHtml(schedCls, sc.loaded ? (sc.state === "running" ? "Running" : "Loaded") : sc.installed ? "Installed, not loaded" : "Not installed")}</div>
+    <div class="s">last run ${ago(sc.last)}${sc.last_status ? ` (${esc(sc.last_status)})` : ""} · ${esc(sc.runs || 0)} runs since load · last exit ${esc(sc.last_exit_code || "-")}</div></div>`;
+  const [lc, ll] = last ? runStatus(last.status) : ["warn", "never"];
+  const dur = r => r.ended_at ? Math.round((Date.parse(r.ended_at) - Date.parse(r.started_at)) / 1000) + " s" : "-";
+  const lastTile = `<div class="tile"><div class="k">Last refresh</div><div class="v">${statusHtml(lc, ll)}</div>
+    <div class="s">${last ? `${ago(last.started_at)} · ${esc(last.trigger)} · ${dur(last)}` : "no run recorded"}${M.failed_7d ? ` · <span class="stale">${M.failed_7d} failed in 7 d</span>` : ""}</div></div>`;
+  const backlog = c.awaiting_extraction + c.extract_errors + c.unembedded;
+  const corpusTile = `<div class="tile"><div class="k">Corpus</div>
+    <div class="v">${statusHtml(c.extract_errors ? "bad" : backlog ? "warn" : "ok", backlog ? `${backlog} to process` : "Up to date")}</div>
+    <div class="s">${c.sessions} sessions · ${c.items} items · ${c.awaiting_extraction} awaiting extraction · ${c.extract_errors} errors ·
+      ${c.unembedded} unembedded · ${c.unclassified} unclassified · DB ${(c.db_bytes / 1048576).toFixed(1)} MB</div></div>`;
+  const spendTile = (label, x) => `<div class="tile"><div class="k">Claude spend · ${label}</div><div class="v">$${x.cost.toFixed(2)}</div>
+    <div class="s">${x.calls} calls${x.failures ? ` · <span class="stale">${x.failures} failed</span>` : ""} · ${fmtTok(x.input_tokens)} in · ${fmtTok(x.output_tokens)} out</div></div>`;
+  const table = (cols, rows) => `<div class="tablewrap"><table class="mon"><tr>${cols.map(([l, , n]) => `<th class="${n ? "n" : ""}">${l}</th>`).join("")}</tr>
+    ${rows.map(r => `<tr>${cols.map(([, f, n]) => `<td class="${n ? "n" : ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</table></div>`;
+  const stepsCell = r => (JSON.parse(r.steps || "[]")).map(x => x.exit ? `<span class="stale">${esc(x.step)} ✕</span>` : `${esc(x.step)} ${x.seconds}s`).join(" · ");
+  return `<div class="tiles">${hookTile}${schedTile}${lastTile}${corpusTile}</div>
+    <div class="tiles">${spendTile("24 h", M.spend["24h"])}${spendTile("7 days", M.spend["7d"])}${spendTile("30 days", M.spend["30d"])}</div>
+    <h2 class="mon">Daily Claude spend, last 30 days <span style="font-weight:400;color:var(--muted)">· tracked since ${M.tracking_since ? M.tracking_since.slice(0, 10) : "-"}</span></h2>
+    <div class="chart" id="chart">${chartSvg(M.daily)}<div class="tip" id="tip"></div></div>
+    <h2 class="mon">Spend by step (30 days)</h2>
+    ${M.by_step.length ? table([["Step", r => esc(r.step)], ["Calls", r => r.calls, 1], ["Failed", r => r.failures || "", 1],
+      ["Output tokens", r => fmtTok(r.output_tokens), 1], ["Avg duration", r => r.avg_seconds + " s", 1], ["Cost", r => "$" + r.cost.toFixed(2), 1]], M.by_step) : `<div class="empty">No Claude calls recorded yet.</div>`}
+    <h2 class="mon">Spend by model (30 days)</h2>
+    ${M.by_model.length ? table([["Model", r => esc(r.model)], ["Calls", r => r.calls, 1], ["Cost", r => "$" + r.cost.toFixed(2), 1]], M.by_model) : ""}
+    <h2 class="mon">Refresh runs</h2>
+    ${M.runs.length ? table([["Started", r => `${esc(r.started_at.slice(0, 16).replace("T", " "))}<div class="s" style="color:var(--muted);font-size:12px">${ago(r.started_at)}</div>`],
+      ["Trigger", r => esc(r.trigger) + (r.session_title || r.session_id ? `<div style="color:var(--muted);font-size:12px">${esc(r.session_title || r.session_id.slice(0, 8))}${r.reason ? " · " + esc(r.reason) : ""}</div>` : "")],
+      ["Status", r => statusHtml(...runStatus(r.status)) + (r.passes > 1 ? ` <span style="color:var(--muted)">×${r.passes}</span>` : "")],
+      ["Duration", r => dur(r), 1], ["Steps", stepsCell], ["Cost", r => r.cost ? "$" + r.cost.toFixed(3) : "", 1]], M.runs)
+      : `<div class="empty">No refresh run recorded yet.</div>`}
+    <details class="section" id="logbox"><summary><h2>Refresh log (last 150 lines)</h2></summary><pre class="log" id="log">Loading…</pre></details>`;
+}
+
+function chartSvg(daily) {
+  const days = [], byDay = Object.fromEntries(daily.map(d => [d.day, d]));
+  for (let i = 29; i >= 0; i--) {
+    const d = new Date(Date.now() - i * 864e5).toISOString().slice(0, 10);
+    days.push(byDay[d] || { day: d, cost: 0, calls: 0 });
+  }
+  const W = 600, H = 140, top = 14, bottom = 18, max = Math.max(...days.map(d => d.cost), 0.01);
+  const bw = W / days.length, base = H - bottom;
+  const bars = days.map((d, i) => {
+    const h = d.cost ? Math.max(2, (d.cost / max) * (base - top)) : 0, x = i * bw + 1, w = bw - 2, y = base - h, r = Math.min(4, w / 2, h);
+    const path = h ? `M${x},${base} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${base} Z` : "";
+    return `<rect class="hit" x="${i * bw}" y="0" width="${bw}" height="${H}" fill="transparent" data-i="${i}"></rect>
+      <path class="bar" data-i="${i}" d="${path}"></path>`;
+  }).join("");
+  window.__days = days;
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="Daily Claude spend, last 30 days">
+    <line class="axis" x1="0" x2="${W}" y1="${base}" y2="${base}"></line>
+    <text x="0" y="10">$${max.toFixed(2)}</text>
+    <text x="0" y="${H - 4}">${days[0].day.slice(5)}</text><text x="${W}" y="${H - 4}" text-anchor="end">today</text>
+    ${bars}</svg>`;
+}
+
+function wireChart() {
+  const chart = $("chart"), tip = $("tip");
+  if (!chart) return;
+  chart.querySelectorAll(".hit").forEach(el => {
+    el.addEventListener("mouseenter", () => {
+      const d = window.__days[+el.dataset.i], box = chart.getBoundingClientRect(), r = el.getBoundingClientRect();
+      chart.querySelectorAll(".bar").forEach(b => b.classList.toggle("on", b.dataset.i === el.dataset.i));
+      tip.textContent = `${d.day} · $${d.cost.toFixed(3)} · ${d.calls} calls`;
+      tip.style.left = (r.left - box.left + r.width / 2) + "px"; tip.style.top = "30px"; tip.style.display = "block";
+    });
+  });
+  chart.addEventListener("mouseleave", () => { tip.style.display = "none"; chart.querySelectorAll(".bar.on").forEach(b => b.classList.remove("on")); });
+  $("logbox").addEventListener("toggle", async e => {
+    if (e.target.open) { $("log").textContent = await (await fetch("/api/log")).text() || "(empty)"; $("log").scrollTop = 1e9; }
+  });
+}
+
 function pick(title, options, current) {
   return new Promise(resolve => {
     $("pickTitle").textContent = title;
@@ -378,7 +503,7 @@ document.addEventListener("click", async e => {
   const t = e.target.closest("[data-tab],[data-edit],[data-session],[data-resume],[data-notdup],[data-pairmerge],[data-undo],[data-resolve],[data-move],[data-open],[data-brief],[data-rename],[data-smerge],[data-sunmerge],[data-ssection],[data-secnew],[data-secrename],[data-secdelete]");
   if (!t) return;
   const d = t.dataset;
-  if (d.tab) { tab = d.tab; try { localStorage.setItem("ledger.tab", tab); } catch {} render(); }
+  if (d.tab) { tab = d.tab; try { localStorage.setItem("ledger.tab", tab); } catch {} if (tab === "monitor") M = null; render(); }
   else if (d.edit) {
     const it = S.items.find(i => i.id == d.edit);
     const text = prompt("Edit item", it.text);

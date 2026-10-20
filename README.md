@@ -51,10 +51,25 @@ Individual steps: `mise run ingest|extract|embed|judge|cluster`.
 
 ## Automatic refresh
 
-A global Claude Code `SessionEnd` hook in `~/.claude/settings.json` runs `bin/on-session-end.sh`,
-which starts `mise run refresh` detached and returns immediately. Concurrent session ends queue
-behind a lock instead of running twice. Output goes to `ledger/data/refresh.log`.
+- **On session exit:** a global Claude Code `SessionEnd` hook in `~/.claude/settings.json` runs
+  `bin/on-session-end.sh`, which starts the refresh detached and returns immediately.
+- **Hourly fallback:** a launchd agent catches sessions that never fire `SessionEnd` (killed,
+  crashed). It skips sessions changed in the last 30 minutes, so live sessions are not re-extracted
+  every hour.
+
+```bash
+mise run schedule:install     # or schedule:uninstall, schedule:status
+```
+
+Concurrent triggers queue behind a lock instead of running twice. Output goes to
+`ledger/data/refresh.log`.
+
+## Monitoring
+
+The dashboard's Monitor tab shows hook and schedule health, the last refresh, corpus backlog,
+Claude spend (24 h / 7 d / 30 d, daily chart, by step and model), the history of refresh runs with
+per-step timings, and the tail of the refresh log. Spend is recorded per Claude call from the
+moment this was added; earlier calls only appear in the logs.
 
 ## Not built yet
 
-- Scheduled refresh as a fallback when sessions are killed without a SessionEnd event.

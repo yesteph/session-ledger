@@ -42,6 +42,18 @@ description = "Ingest, extract, embed, judge and cluster in one locked pass (use
 dir = "{{config_root}}/ledger"
 run = "python refresh.py"
 
+[tasks."schedule:install"]
+description = "Install the hourly launchd refresh (fallback for sessions that never fire SessionEnd)"
+run = "bin/schedule.sh install"
+
+[tasks."schedule:uninstall"]
+description = "Remove the hourly launchd refresh"
+run = "bin/schedule.sh uninstall"
+
+[tasks."schedule:status"]
+description = "Show the launchd refresh state, run count and last exit code"
+run = "bin/schedule.sh status"
+
 [tasks.serve]
 description = "Serve the review dashboard on http://127.0.0.1:8765"
 dir = "{{config_root}}/ledger"

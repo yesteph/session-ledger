@@ -55,7 +55,10 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
    actions (`merge`, `undo`, `not-duplicate`, `resolve`, `item`, `subject`, `subject-merge`, `subject-unmerge`,
    `item-subject`, `section`, `section-delete`, `subject-section`). Single static page, no build step.
 7. **refresh.py**: runs steps 1-5 under an `fcntl` lock; concurrent callers drop a `refresh.pending`
-   marker and the lock holder loops until it is gone.
+   marker and the lock holder loops until it is gone. Every invocation is a `run` row (`trigger` hook |
+   schedule | manual; `queued` when folded into a running pass). It exports `LEDGER_RUN_ID`, which
+   `claude_cli.structured` uses to tie each `llm_call` row (tokens, cost, resolved model) to the run.
+   `/api/monitor` aggregates both tables for the Monitor tab.
 
 ### Invariants to preserve
 
@@ -73,7 +76,11 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
 
 ## Automatic refresh
 
-The global `SessionEnd` hook in `~/.claude/settings.json` (not in this repo) calls `bin/on-session-end.sh`,
-which detaches `mise -C <repo> run refresh` and returns immediately. Logs: `ledger/data/refresh.log`.
+- The global `SessionEnd` hook in `~/.claude/settings.json` (not in this repo) calls `bin/on-session-end.sh`,
+  which detaches `refresh.py --trigger hook --hook-input <payload>` and returns immediately.
+- `bin/schedule.sh` (mise tasks `schedule:*`) manages the hourly launchd agent `local.session-ledger.refresh`
+  (`~/Library/LaunchAgents`), which runs `refresh.py --trigger schedule --min-idle 30`. It runs outside any shell,
+  so it calls mise by absolute path; `claude` resolves through the global mise config.
+- Logs: `ledger/data/refresh.log`.
 Claude Code deletes transcripts older than `cleanupPeriodDays` (default 30): the ledger keeps their items,
 but `claude --resume` no longer works for them.

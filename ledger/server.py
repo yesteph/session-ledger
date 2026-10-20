@@ -7,6 +7,8 @@ Usage: python3 server.py [--port 8765]
 """
 import argparse
 import json
+import os
+import subprocess
 from collections import defaultdict
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import embed
 import judge
-from db import connect
+from db import DB_PATH, connect
 
 HERE = Path(__file__).parent
 
@@ -122,6 +124,87 @@ def candidates(conn):
             p.update(label=None, resolver=None, reason=None)
         out.append(p)
     return out
+
+
+LAUNCHD_LABEL = "local.session-ledger.refresh"
+
+
+def hook_installed():
+    try:
+        settings = json.loads((Path.home() / ".claude" / "settings.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return any("on-session-end.sh" in h.get("command", "")
+               for group in settings.get("hooks", {}).get("SessionEnd", []) for h in group.get("hooks", []))
+
+
+def schedule_state():
+    plist = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
+    state = {"installed": plist.exists(), "loaded": False}
+    try:
+        out = subprocess.run(["launchctl", "print", f"gui/{os.getuid()}/{LAUNCHD_LABEL}"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return state
+    for line in out.splitlines():
+        key, _, value = line.strip().partition(" = ")
+        if key in ("state", "runs", "last exit code", "run interval") and key not in state:
+            state[key.replace(" ", "_")] = value
+    state["loaded"] = bool(out)
+    return state
+
+
+def monitor(conn):
+    one = lambda sql, *a: conn.execute(sql, a).fetchone()[0]
+    rows = lambda sql, *a: [dict(r) for r in conn.execute(sql, a)]
+    since = lambda days: f"strftime('%Y-%m-%dT%H:%M:%SZ', 'now', '-{days} days')"
+    spend = {}
+    for label, days in (("24h", 1), ("7d", 7), ("30d", 30)):
+        spend[label] = dict(conn.execute(f"""
+            SELECT count(*) calls, sum(1 - ok) failures, round(coalesce(sum(cost_usd), 0), 2) cost,
+                   coalesce(sum(input_tokens), 0) + coalesce(sum(cache_read_tokens), 0) + coalesce(sum(cache_write_tokens), 0) input_tokens,
+                   coalesce(sum(output_tokens), 0) output_tokens
+            FROM llm_call WHERE at >= {since(days)}""").fetchone())
+    return {
+        "hook": {"installed": hook_installed(),
+                 "last": one("SELECT max(started_at) FROM run WHERE trigger='hook'"),
+                 "count_24h": one(f"SELECT count(*) FROM run WHERE trigger='hook' AND started_at >= {since(1)}"),
+                 "count_7d": one(f"SELECT count(*) FROM run WHERE trigger='hook' AND started_at >= {since(7)}")},
+        "schedule": {**schedule_state(),
+                     "last": one("SELECT max(started_at) FROM run WHERE trigger='schedule'"),
+                     "last_status": one("SELECT status FROM run WHERE trigger='schedule' ORDER BY id DESC LIMIT 1")},
+        "spend": spend,
+        "by_step": rows(f"""SELECT step, count(*) calls, sum(1 - ok) failures, round(coalesce(sum(cost_usd), 0), 2) cost,
+                                  coalesce(sum(output_tokens), 0) output_tokens, round(avg(seconds), 1) avg_seconds
+                           FROM llm_call WHERE at >= {since(30)} GROUP BY step ORDER BY cost DESC"""),
+        "by_model": rows(f"""SELECT model, count(*) calls, round(coalesce(sum(cost_usd), 0), 2) cost
+                            FROM llm_call WHERE at >= {since(30)} GROUP BY model ORDER BY cost DESC"""),
+        "daily": rows(f"""SELECT substr(at, 1, 10) day, round(sum(cost_usd), 3) cost, count(*) calls
+                         FROM llm_call WHERE at >= {since(30)} GROUP BY day ORDER BY day"""),
+        "tracking_since": one("SELECT min(at) FROM llm_call"),
+        "runs": rows("""SELECT r.*, s.title session_title,
+                               (SELECT round(sum(cost_usd), 3) FROM llm_call c WHERE c.run_id = r.id) cost
+                        FROM run r LEFT JOIN session s ON s.id = r.session_id ORDER BY r.id DESC LIMIT 40"""),
+        "failed_7d": one(f"SELECT count(*) FROM run WHERE status='failed' AND started_at >= {since(7)}"),
+        "corpus": {
+            "sessions": one("SELECT count(*) FROM session"),
+            "awaiting_extraction": one("SELECT count(*) FROM session WHERE extracted_hash IS NULL OR extracted_hash != content_hash"),
+            "extract_errors": one("SELECT count(*) FROM session WHERE extract_error IS NOT NULL"),
+            "items": one("SELECT count(*) FROM item WHERE merged_into IS NULL"),
+            "unclassified": one("SELECT count(*) FROM item WHERE merged_into IS NULL AND subject_id IS NULL"),
+            "unembedded": one("""SELECT count(*) FROM item i LEFT JOIN item_embedding e ON e.item_id = i.id
+                                 WHERE i.merged_into IS NULL AND e.item_id IS NULL"""),
+            "db_bytes": os.path.getsize(DB_PATH),
+        },
+    }
+
+
+def log_tail(lines=150):
+    path = HERE / "data" / "refresh.log"
+    try:
+        return "".join(path.read_text(errors="replace").splitlines(keepends=True)[-lines:])
+    except OSError:
+        return ""
 
 
 def merges(conn):
@@ -273,6 +356,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/state":
                 return self._send(200, {"items": items(conn), "sessions": sessions(conn), "subjects": subjects(conn), "sections": sections(conn),
                                         "candidates": candidates(conn), "merges": merges(conn)})
+            if path == "/api/monitor":
+                return self._send(200, monitor(conn))
+            if path == "/api/log":
+                return self._send(200, log_tail().encode(), "text/plain; charset=utf-8")
             if path == "/api/brief":
                 sid = int(parse_qs(urlparse(self.path).query).get("subject", ["0"])[0])
                 return self._send(200, brief(conn, sid).encode(), "text/markdown; charset=utf-8")

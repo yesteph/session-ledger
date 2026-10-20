@@ -4,11 +4,12 @@ Runs headless `claude -p` with structured output, so it uses the local Claude Co
 and never persists the extraction runs as sessions (they would pollute the corpus).
 Dates come from the message refs the model cites, looked up in the session's ref map.
 
-Usage: python3 extract.py [--limit N] [--model sonnet] [--workers 4] [--session ID]
+Usage: python3 extract.py [--limit N] [--model sonnet] [--workers 4] [--session ID] [--min-idle MINUTES]
 """
 import argparse
 import json
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from claude_cli import structured
@@ -107,6 +108,8 @@ def main():
     ap.add_argument("--model", default="sonnet")
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--session", help="extract one session id (prefix ok), even if up to date")
+    ap.add_argument("--min-idle", type=int, default=0, metavar="MINUTES",
+                    help="skip sessions whose transcript changed less than MINUTES ago (still in progress)")
     args = ap.parse_args()
 
     conn = connect()
@@ -114,8 +117,9 @@ def main():
         todo = conn.execute("SELECT * FROM session WHERE id LIKE ?", (args.session + "%",)).fetchall()
     else:
         todo = conn.execute(
-            """SELECT * FROM session WHERE extracted_hash IS NULL OR extracted_hash != content_hash
-               ORDER BY ended_at DESC LIMIT ?""", (args.limit,)).fetchall()
+            """SELECT * FROM session WHERE (extracted_hash IS NULL OR extracted_hash != content_hash)
+                 AND file_mtime <= ? ORDER BY ended_at DESC LIMIT ?""",
+            (time.time() - args.min_idle * 60, args.limit)).fetchall()
     print(f"extracting {len(todo)} sessions with {args.model}", file=sys.stderr)
 
     total_cost = 0.0
