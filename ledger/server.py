@@ -44,13 +44,23 @@ def items(conn):
             out += family(c)
         return out
 
+    events = defaultdict(list)
+    for e in conn.execute("SELECT item_id, at, from_type, to_type, source FROM item_event ORDER BY at"):
+        events[e["item_id"]].append({"at": e["at"], "from": e["from_type"], "to": e["to_type"], "source": e["source"]})
     resolve = subject_resolver(conn)
     for r in rows:
         fam = family(r["id"])
         r["merged_count"] = len(fam) - 1
         r["sessions"] = sorted({s for i in fam for s in sessions[i]})
         r["subject_id"] = resolve(r["subject_id"])
+        r["events"] = [e for i in fam for e in events.get(i, [])]
     return rows
+
+
+def log_event(conn, iid, from_type, to_type):
+    if from_type != to_type:
+        conn.execute("INSERT INTO item_event (item_id, at, from_type, to_type, source) VALUES (?,?,?,?, 'user')",
+                     (iid, now(), from_type, to_type))
 
 
 def subject_resolver(conn):
@@ -262,6 +272,7 @@ def resolve(conn, pending_id, resolver_id):
     if not p or not r:
         raise ValueError("pending item or resolver not found")
     note = f"resolved by #{r['id']}: {r['text'][:200]}"
+    log_event(conn, pending_id, "pending", "done")
     conn.execute("""UPDATE item SET type='done', resolved_at=?, last_seen_at=max(coalesce(last_seen_at,''), ?),
                     evidence=trim(coalesce(evidence || ' | ', '') || ?), edited=1 WHERE id=?""",
                  (r["resolved_at"] or r["last_seen_at"] or now(), r["last_seen_at"] or "", note, pending_id))
@@ -330,6 +341,7 @@ def edit(conn, iid, text=None, type_=None):
         raise ValueError("item not found")
     t = type_ or row["type"]
     resolved = None if t == "pending" else (row["resolved_at"] or now())
+    log_event(conn, iid, row["type"], t)
     conn.execute("UPDATE item SET text=?, type=?, resolved_at=?, edited=1 WHERE id=?",
                  (text or row["text"], t, resolved, iid))
     conn.commit()

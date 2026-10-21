@@ -39,7 +39,13 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
 2. **extract.py**: runs headless `claude -p` with `--json-schema` per session where
    `extracted_hash != content_hash` (so renames, which only change metadata, do not re-extract).
    The model cites message refs; **all item dates are looked up from `refs`, never written by the model**.
-   Re-extraction deletes only the session's machine items that are unedited and unmerged.
+   Two modes. *Full* (first extraction, or `--session` to force it) reads the whole condensed transcript and
+   replaces the session's unedited, unmerged machine items. *Delta* (any later extraction) relies on
+   transcripts being append-only: it sends only messages newer than `session.checkpoint_ts`, a few earlier
+   messages as context, and the session's existing items (merged ones via their canonical item; `edited`
+   ones marked read-only). The model returns `new_items` plus `updates` by item id; status changes are
+   logged in `item_event` (source `extract`; dashboard edits log source `user`). Only refs of new messages
+   are citable.
 3. **embed.py**: local fastembed (`BAAI/bge-small-en-v1.5`), normalised float32 BLOBs in `item_embedding`,
    brute-force dot product. `candidates()` returns cross-session pairs above `THRESHOLD` (0.85, calibrated
    on real data; see the comment), skipping `not_duplicate` pairs.

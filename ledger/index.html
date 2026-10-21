@@ -272,6 +272,7 @@ function itemHtml(it, { selectable = true, actions = true } = {}) {
       <span>${dates}</span>
       ${it.merged_count ? `<span>merged ×${it.merged_count + 1}</span>` : ""}
       ${it.edited ? `<span title="edited by you; re-extraction keeps it">✎</span>` : ""}
+      ${(it.events || []).length ? `<span title="${esc(it.events.map(e => `${day(e.at)} ${e.from} → ${e.to} (${e.source === "user" ? "you" : "session"})`).join("\n"))}">↻ ${esc(it.events.at(-1).from)} → ${esc(it.events.at(-1).to)} ${day(it.events.at(-1).at)}</span>` : ""}
       <button class="chip subject" data-move="${it.id}" title="Move to another subject">▸ ${esc(subjById()[it.subject_id]?.name || "Unclassified")}</button>
       ${sessionChips(it)}
       ${actions ? `<span class="actions">

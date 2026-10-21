@@ -93,6 +93,19 @@ CREATE TABLE IF NOT EXISTS pair_judgment (
   PRIMARY KEY (a, b)
 );
 
+CREATE TABLE IF NOT EXISTS item_event (
+  id            INTEGER PRIMARY KEY,
+  item_id       INTEGER NOT NULL REFERENCES item(id),
+  at            TEXT NOT NULL,      -- transcript time of the change (extraction) or wall clock (user)
+  from_type     TEXT,
+  to_type       TEXT NOT NULL,
+  source        TEXT NOT NULL,      -- extract | user
+  session_id    TEXT,
+  message_uuid  TEXT,
+  run_id        INTEGER
+);
+CREATE INDEX IF NOT EXISTS item_event_item ON item_event(item_id);
+
 CREATE TABLE IF NOT EXISTS run (
   id            INTEGER PRIMARY KEY,
   trigger       TEXT NOT NULL,      -- hook | schedule | manual
@@ -133,7 +146,7 @@ def connect():
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(session)")}
-    for col in ("content_hash", "extracted_hash"):
+    for col in ("content_hash", "extracted_hash", "checkpoint_ts"):  # checkpoint_ts: last message extracted
         if col not in cols:
             conn.execute(f"ALTER TABLE session ADD COLUMN {col} TEXT")
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(subject)")}
