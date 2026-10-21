@@ -139,7 +139,9 @@ CREATE TABLE IF NOT EXISTS not_duplicate (
 
 
 def connect():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    data_dir = os.path.dirname(DB_PATH)
+    os.makedirs(data_dir, exist_ok=True)
+    os.chmod(data_dir, 0o700)  # condensed transcripts can contain secrets: owner only
     conn = sqlite3.connect(DB_PATH, timeout=60)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")

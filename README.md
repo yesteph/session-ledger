@@ -30,6 +30,10 @@ so open threads spread across many conversations are not lost, and duplicates ca
    markdown brief to continue a subject in a new session. Sections can be created, renamed and deleted,
    and subjects moved between them.
 
+Transcripts are treated as untrusted input: Claude runs without tools, hooks or saved sessions and
+answers in a fixed JSON schema, so a hostile transcript can at worst produce misleading item text,
+which the dashboard displays escaped.
+
 Merges are non-destructive: absorbed items point at the canonical item, every merge is logged
 with a snapshot, and can be undone. Pairs marked "not a duplicate" are never suggested again.
 Items you edit or merge survive re-extraction.
@@ -131,8 +135,9 @@ Known gaps, roughly by priority.
 - **Spend history starts on 2026-10-20.** About $35 of earlier extraction and judging only appears in
   `ledger/data/*.log`.
 - **macOS only for the schedule.** The fallback uses launchd; Linux would need a systemd timer or cron.
-- **Local and unauthenticated.** The dashboard binds 127.0.0.1 with no login, and `ledger/data/` holds
-  condensed transcripts unencrypted. Keep it on a single-user machine.
+- **Local and unauthenticated.** The dashboard binds 127.0.0.1 with no login. It refuses requests
+  addressed to any other host name (DNS rebinding) and writes that are not same-origin JSON (CSRF).
+  `ledger/data/` holds condensed transcripts unencrypted, readable by your account only.
 - **Hard-coded exclusions.** `ingest.EXCLUDE_DIR` matches this machine's automated-run folders
   (archive, nightly, snaps, scratchpad); make it configurable before using it elsewhere.
 

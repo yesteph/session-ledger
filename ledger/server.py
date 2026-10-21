@@ -350,6 +350,25 @@ def edit(conn, iid, text=None, type_=None):
 # ---------- http ----------
 
 class Handler(BaseHTTPRequestHandler):
+    def _trusted(self, write=False):
+        """Refuse requests a web page could forge.
+
+        Host must name this server: a page on another domain that re-resolves to 127.0.0.1
+        (DNS rebinding) sends its own Host and is refused. Writes must be JSON, which makes a
+        cross-site browser request need a CORS preflight that this server never grants, and
+        any Origin a browser sends must be this server's own.
+        """
+        hosts = self.server.allowed_hosts
+        if self.headers.get("Host") not in hosts:
+            return False
+        if write:
+            if self.headers.get_content_type() != "application/json":
+                return False
+            origin = self.headers.get("Origin")
+            if origin is not None and origin not in {f"http://{h}" for h in hosts}:
+                return False
+        return True
+
     def _send(self, code, body, ctype="application/json"):
         data = body if isinstance(body, bytes) else json.dumps(body).encode()
         self.send_response(code)
@@ -360,6 +379,8 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self):
+        if not self._trusted():
+            return self._send(403, {"error": "forbidden"})
         path = self.path.split("?")[0]
         if path in ("/", "/index.html"):
             return self._send(200, (HERE / "index.html").read_bytes(), "text/html; charset=utf-8")
@@ -382,7 +403,12 @@ class Handler(BaseHTTPRequestHandler):
             conn.close()
 
     def do_POST(self):
-        body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        if not self._trusted(write=True):
+            return self._send(403, {"error": "forbidden"})
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+        except ValueError:
+            return self._send(400, {"error": "invalid JSON"})
         conn = connect()
         try:
             if self.path == "/api/merge":
@@ -426,4 +452,6 @@ if __name__ == "__main__":
     ap.add_argument("--port", type=int, default=8765)
     args = ap.parse_args()
     print(f"ledger dashboard on http://127.0.0.1:{args.port}")
-    ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
+    httpd = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    httpd.allowed_hosts = {f"127.0.0.1:{args.port}", f"localhost:{args.port}"}
+    httpd.serve_forever()

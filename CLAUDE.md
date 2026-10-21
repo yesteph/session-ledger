@@ -78,7 +78,11 @@ migrations in `connect()`, WAL mode, 60 s busy timeout).
 - **Headless `claude -p` calls go through `claude_cli.structured`**, which must keep `--no-session-persistence` (or they pollute the corpus) and
   `--setting-sources ""` (or they load user hooks and re-trigger the SessionEnd hook recursively). They run in
   a temp cwd with `--tools ""`; transcript text is untrusted data.
-- `ledger/data/` holds condensed transcripts and may contain secrets: it is gitignored and must never be committed.
+- `ledger/data/` holds condensed transcripts and may contain secrets: it is gitignored, created owner-only (0700)
+  by `db.connect`, and must never be committed.
+- **The dashboard trusts only itself**: `Handler._trusted` refuses a `Host` other than `127.0.0.1`/`localhost` on the
+  server's port (DNS rebinding) and writes that are not `application/json` or carry a foreign `Origin` (CSRF). Keep it
+  on every new endpoint; the page's `post()` already sends JSON.
 
 ## Automatic refresh
 
